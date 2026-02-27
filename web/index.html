@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keith | Autonomous AI</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>Keith Agent</h2>
+                <div class="status-indicator online"></div>
+            </div>
+
+            <div class="nav-section">
+                <h3>SESSIONS</h3>
+                <ul class="session-list">
+                    <li>
+                        <a href="/" style="text-decoration: none; color: inherit; display: block; width: 100%;">
+                            Terminal Chat
+                        </a>
+                    </li>
+                    <li style="margin-top: 8px;">
+                        <a href="/memory.html"
+                            style="text-decoration: none; color: inherit; display: block; width: 100%;">
+                            Supermemory Graph
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>AGENTS</h3>
+                <ul class="agent-list">
+                    <li class="agent-item">
+                        <span class="agent-icon">🧠</span>
+                        <div class="agent-info">
+                            <span class="agent-name">Gateway (Main)</span>
+                            <span class="agent-status">Idle</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>CHRONO MATRIX</h3>
+                <ul class="agent-list" id="chronoList">
+                    <!-- Jobs populated by JS -->
+                    <li class="agent-item" style="opacity: 0.5;">
+                        <span class="agent-icon">🕰️</span>
+                        <div class="agent-info">
+                            <span class="agent-name">No Active Alarms</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="sys-metrics">
+                    <div class="metric">
+                        <span>CPU</span>
+                        <div class="bar-container">
+                            <div class="bar" style="width: 12%"></div>
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <span>MEM</span>
+                        <div class="bar-container">
+                            <div class="bar" style="width: 45%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="model-selector">
+                    <select id="modelSelect">
+                        <option value="gemini-3-flash">Gemini 3 Flash</option>
+                        <option value="gemini-3.1-pro-high">Gemini 3.1 Pro (High)</option>
+                        <option value="claude-sonnet-4-6">Claude 3.5 Sonnet</option>
+                    </select>
+                </div>
+            </header>
+
+            <div class="messages-container" id="messagesContainer">
+                <div class="message system-msg">
+                    <div class="message-content">
+                        <strong>System initialized.</strong> Connect to WebSocket...
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <form id="chatForm">
+                    <div class="input-wrapper">
+                        <textarea id="messageInput" placeholder="Message Keith..." rows="1" autofocus></textarea>
+                        <button type="submit" id="sendBtn" class="send-btn">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keith | Supermemory</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        gray: {
+                            850: '#1f2937',
+                            900: '#111827',
+                            950: '#0B0F19',
+                        },
+                        brand: {
+                            400: '#a78bfa',
+                            500: '#8b5cf6',
+                            600: '#7c3aed',
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'float': 'float 6s ease-in-out infinite',
+                        'fade-in': 'fadeIn 0.5s ease-out',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-10px)' },
+                        },
+                        fadeIn: {
+                            'from': { opacity: '0', transform: 'translateY(10px)' },
+                            'to': { opacity: '1', transform: 'translateY(0)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0B0F19;
+            background-image:
+                radial-gradient(at 0% 0%, hsla(253, 16%, 7%, 1) 0, transparent 50%),
+                radial-gradient(at 50% 0%, hsla(225, 39%, 30%, 0.1) 0, transparent 50%),
+                radial-gradient(at 100% 0%, hsla(339, 49%, 30%, 0.1) 0, transparent 50%);
+            background-attachment: fixed;
+            color: #f3f4f6;
+        }
+
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.4);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Subtle glowing dots background */
+        .bg-dots {
+            background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 24px 24px;
+        }
+
+        /* Scrollbar aesthetics */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+
+<body class="antialiased min-h-screen flex selection:bg-brand-500 selection:text-white">
+
+    <!-- Static Navigation (Matches `index.html` structure) -->
+    <aside class="w-64 glass-panel border-r border-white/5 flex flex-col hidden md:flex sticky top-0 h-screen z-20">
+        <div class="p-6 border-b border-white/5 flex items-center justify-between">
+            <h2 class="font-bold text-lg tracking-tight flex items-center gap-2">
+                <div
+                    class="w-3 h-3 rounded-full bg-brand-500 animate-pulse-slow shadow-[0_0_10px_rgba(139,92,246,0.6)]">
+                </div>
+                Keith Agent
+            </h2>
+        </div>
+
+        <div class="p-4 flex-1">
+            <div class="mb-8">
+                <h3 class="text-xs font-semibold text-gray-500 tracking-widest mb-3 px-2">DASHBOARD</h3>
+                <ul class="space-y-1">
+                    <li>
+                        <a href="/"
+                            class="flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 rounded-lg transition-colors">
+                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z">
+                                </path>
+                            </svg>
+                            Terminal Chat
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/memory.html"
+                            class="flex items-center gap-3 px-3 py-2 text-sm font-medium text-brand-400 bg-brand-500/10 rounded-lg transition-colors relative">
+                            <div
+                                class="absolute inset-y-0 left-0 w-1 bg-brand-500 rounded-r-full shadow-[0_0_10px_rgba(139,92,246,0.5)]">
+                            </div>
+                            <svg class="w-4 h-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
+                                </path>
+                            </svg>
+                            Supermemory Graph
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </aside>
+
+    <!-- React Mount Point -->
+    <main id="root" class="flex-1 min-h-screen bg-dots relative overflow-hidden"></main>
+
+    <!-- React UI Source -->
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const MemoryCard = ({ fact, onDelete }) => {
+            const [isDeleting, setIsDeleting] = useState(false);
+
+            const handleDelete = async () => {
+                setIsDeleting(true);
+                try {
+                    const response = await fetch('/api/memories/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: fact.id })
+                    });
+
+                    if (response.ok) {
+                        onDelete(fact.id);
+                    } else {
+                        console.error('Failed to delete memory');
+                        setIsDeleting(false);
+                    }
+                } catch (error) {
+                    console.error('Network error', error);
+                    setIsDeleting(false);
+                }
+            };
+
+            const date = new Date(fact.created_at);
+            const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+            const daysDifference = Math.round((date - new Date()) / (1000 * 60 * 60 * 24));
+
+            const timeAgo = daysDifference === 0
+                ? 'Today'
+                : rtf.format(daysDifference, 'day');
+
+            return (
+                <div className={`glass-panel p-5 rounded-2xl relative group overflow-hidden transition-all duration-300 ${isDeleting ? 'opacity-0 scale-95' : 'hover:-translate-y-1 hover:shadow-[0_8px_30px_rgba(139,92,246,0.15)] hover:border-brand-500/30'} animate-fade-in`}>
+                    <div className="absolute inset-0 bg-gradient-to-br from-brand-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+
+                    <div className="relative z-10 flex justify-between items-start gap-4">
+                        <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-3">
+                                <span className="px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-mono text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div>
+                                    Matrix Node {fact.id}
+                                </span>
+                                <span className="text-xs text-gray-500">{timeAgo}</span>
+                            </div>
+
+                            <p className="text-gray-200 leading-relaxed font-medium">
+                                {fact.content}
+                            </p>
+                        </div>
+
+                        <button
+                            onClick={handleDelete}
+                            disabled={isDeleting}
+                            className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-red-400 hover:bg-red-400/10 hover:border-red-400/20 transition-all opacity-0 group-hover:opacity-100 disabled:opacity-50"
+                            title="Prune vector node"
+                        >
+                            {isDeleting ? (
+                                <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            ) : (
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            )}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const Dashboard = () => {
+            const [facts, setFacts] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [error, setError] = useState(null);
+
+            useEffect(() => {
+                fetchMemories();
+            }, []);
+
+            const fetchMemories = async () => {
+                try {
+                    const res = await fetch('/api/memories');
+                    if (!res.ok) throw new Error('Failed to fetch Supermemory graph');
+                    const data = await res.json();
+                    setFacts(data || []);
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            const handleDeleteMemory = (id) => {
+                setFacts(current => current.filter(fact => fact.id !== id));
+            };
+
+            return (
+                <div className="max-w-5xl mx-auto p-8 lg:p-12 relative z-10">
+                    <div className="absolute top-0 right-0 -mt-20 -mr-20 w-96 h-96 bg-brand-500/20 rounded-full blur-[100px] pointer-events-none animate-pulse-slow"></div>
+
+                    <header className="mb-12">
+                        <div className="flex items-center gap-3 mb-2">
+                            <span className="h-[2px] w-8 bg-brand-500"></span>
+                            <h2 className="text-brand-400 font-mono text-sm tracking-widest uppercase shadow-brand-500/20">Phase 4B Architecture</h2>
+                        </div>
+                        <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-white mb-4">
+                            Vector <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-400 to-indigo-400">Supermemory</span>
+                        </h1>
+                        <p className="text-gray-400 max-w-2xl text-lg leading-relaxed">
+                            A live visualization of Keith's semantic knowledge graph.
+                            Manage, audit, and prune the local SQLite representations of your mathematical context vectors.
+                        </p>
+                    </header>
+
+                    {isLoading ? (
+                        <div className="flex flex-col items-center justify-center p-20 glass-panel rounded-3xl">
+                            <div className="w-12 h-12 border-4 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-4"></div>
+                            <p className="text-brand-400 font-mono text-sm animate-pulse">Syncing local SQLite matrices...</p>
+                        </div>
+                    ) : error ? (
+                        <div className="glass-panel border-red-500/20 bg-red-500/5 p-8 rounded-2xl flex items-center gap-4 text-red-400">
+                            <svg className="w-8 h-8 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            <div>
+                                <h3 className="font-semibold text-white mb-1">Matrix Connection Failed</h3>
+                                <p className="text-sm opacity-80">{error}</p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div>
+                            <div className="flex justify-between items-end mb-6">
+                                <h3 className="text-lg font-semibold text-gray-200">Active Concept Nodes ({facts.length})</h3>
+                                <button
+                                    onClick={fetchMemories}
+                                    className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                    Resync Graph
+                                </button>
+                            </div>
+
+                            {facts.length === 0 ? (
+                                <div className="glass-panel p-16 rounded-3xl text-center border-dashed border-white/10">
+                                    <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mx-auto mb-4 border border-white/10">
+                                        <svg className="w-8 h-8 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                                    </div>
+                                    <h3 className="text-xl font-semibold text-white mb-2">Virgin Matrix</h3>
+                                    <p className="text-gray-400 max-w-sm mx-auto">
+                                        No facts have been vectorized yet. Ask Keith to remember your name to seed a new persistent node in the graph.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {facts.map(fact => (
+                                        <MemoryCard
+                                            key={fact.id}
+                                            fact={fact}
+                                            onDelete={handleDeleteMemory}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<Dashboard />);
+    </script>
+</body>
+
+</html>
