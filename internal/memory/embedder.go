@@ -20,6 +20,11 @@ import (
 var embedderCmd *exec.Cmd
 var mlPort int
 
+// GetMLPort returns the dynamically allocated port for the ML engine.
+func GetMLPort() int {
+	return mlPort
+}
+
 const pythonServerScript = `
 import os
 import sys
@@ -134,6 +139,13 @@ func StartMLEngine() error {
 	// 4. Spawn the Python Subprocess Daemon
 	fmt.Println("[Phase 3D] Spawning Vector Matrix Engine...")
 	embedderCmd = exec.Command(pyBin, serverPath)
+	// Phase 20: Inject critical env vars to prevent OpenMP collision crash
+	embedderCmd.Env = append(os.Environ(),
+		"KMP_DUPLICATE_LIB_OK=TRUE",
+		"OMP_NUM_THREADS=1",
+		"TOKENIZERS_PARALLELISM=false",
+		"HF_HUB_DISABLE_TELEMETRY=1",
+	)
 	// We map the Python engine's outputs to Go so the user can see model loading
 	embedderCmd.Stdout = os.Stdout
 	embedderCmd.Stderr = os.Stderr

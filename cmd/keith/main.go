@@ -333,9 +333,9 @@ func main() {
 				os.Exit(0)
 			}()
 
-			// Phase 18: Dynamically find open port
-			port := 8080
-			for p := 8080; p < 8180; p++ {
+			// Phase 20: Dynamically find open port in developer-safe range
+			port := 42000
+			for p := 42000; p < 43000; p++ {
 				ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
 				if err == nil {
 					ln.Close()
@@ -347,6 +347,9 @@ func main() {
 			// Capture runtime port into cache
 			portFile := filepath.Join(homeDir, ".config", "keith", "run.port")
 			os.WriteFile(portFile, []byte(fmt.Sprintf("%d", port)), 0644)
+
+			// Phase 20: Launch self-healing watchdog
+			gateway.StartWatchdog(port)
 
 			server := gateway.NewServer(port)
 			if err := server.Start(); err != nil {
