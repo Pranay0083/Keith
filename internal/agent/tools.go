@@ -60,37 +60,76 @@ func (s *ShellTool) Execute(args map[string]string) (string, error) {
 		return fmt.Sprintf("Process detached. Successfully spawned background process with PID %d.\nCommand: %s", cmd.Process.Pid, cmdStr), nil
 	}
 
+	// Phase 20: Progressive timeout — extend deadline while output is still being produced
+	maxTimeout := 60 * time.Second
+	if customTimeout, hasTimeout := args["timeout"]; hasTimeout {
+		if parsed, err := time.ParseDuration(customTimeout + "s"); err == nil {
+			maxTimeout = parsed
+		}
+	}
+	silenceLimit := 30 * time.Second
+
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 
-	// Add a timeout to prevent hanging commands
 	errc := make(chan error, 1)
 	go func() {
 		errc <- cmd.Run()
 	}()
 
-	select {
-	case err := <-errc:
-		if err != nil {
-			return fmt.Sprintf("Error: %v\nOutput: %s\nStderr: %s", err, out.String(), stderr.String()), err
-		}
-	case <-time.After(30 * time.Second):
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-		}
-		return "", fmt.Errorf("command timed out after 30 seconds")
-	}
+	deadline := time.NewTimer(maxTimeout)
+	silenceCheck := time.NewTicker(2 * time.Second)
+	defer deadline.Stop()
+	defer silenceCheck.Stop()
 
-	result := out.String()
-	if result == "" {
-		result = stderr.String()
+	lastLen := 0
+	lastActivity := time.Now()
+
+	for {
+		select {
+		case err := <-errc:
+			if err != nil {
+				return fmt.Sprintf("Error: %v\nOutput: %s\nStderr: %s", err, out.String(), stderr.String()), err
+			}
+			result := out.String()
+			if result == "" {
+				result = stderr.String()
+			}
+			if result == "" {
+				result = "(Command executed successfully with no output)"
+			}
+			return result, nil
+		case <-deadline.C:
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			partial := out.String()
+			if partial == "" {
+				partial = stderr.String()
+			}
+			return fmt.Sprintf("Command timed out after %v. Partial output:\n%s", maxTimeout, partial), fmt.Errorf("command timed out after %v", maxTimeout)
+		case <-silenceCheck.C:
+			currentLen := out.Len() + stderr.Len()
+			if currentLen > lastLen {
+				// Still producing output — extend deadline
+				lastLen = currentLen
+				lastActivity = time.Now()
+				deadline.Reset(maxTimeout)
+			} else if time.Since(lastActivity) > silenceLimit {
+				// Silent for too long — kill it
+				if cmd.Process != nil {
+					cmd.Process.Kill()
+				}
+				partial := out.String()
+				if partial == "" {
+					partial = stderr.String()
+				}
+				return fmt.Sprintf("Command killed after %v of silence. Partial output:\n%s", silenceLimit, partial), fmt.Errorf("command silent for %v", silenceLimit)
+			}
+		}
 	}
-	if result == "" {
-		result = "(Command executed successfully with no output)"
-	}
-	return result, nil
 }
 
 // SaveFactTool permanently saves a fact to Keith's SQLite brain.
@@ -496,6 +535,10 @@ func NewToolRegistry() *ToolRegistry {
 	r.Register(&ControlDisplayBrightnessTool{})
 	r.Register(&SpeakTextTool{})
 	r.Register(&UpdateConfigTool{})
+	// Phase 20: Self-Healing Tools
+	r.Register(&RebootMLEngineTool{})
+	r.Register(&RebootSelfTool{})
+	r.Register(NewDiagnoseHealthTool())
 	return r
 }
 

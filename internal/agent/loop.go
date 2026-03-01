@@ -57,7 +57,7 @@ func (s *AgentSession) ProcessMessage(userMessage string, model string, onProgre
 		}
 
 		systemPrompt = identityContext
-		systemPrompt += fmt.Sprintf("\n\n[SYSTEM: SELF-PRESERVATION DIRECTIVE]\nYour own local Daemon Process ID (PID) is **%d**.\n NEVER attempt to kill this PID. It will terminate your own brain and the user's Web UI connection.\nAdditionally, NEVER kill any Python processes listening on port 8046, as that is your own Vector Execution engine for memory!", os.Getpid())
+		systemPrompt += fmt.Sprintf("\n\n[SYSTEM: SELF-PRESERVATION DIRECTIVE]\nYour own local Daemon Process ID (PID) is **%d**.\n NEVER attempt to kill this PID. It will terminate your own brain and the user's Web UI connection.\nAdditionally, NEVER kill any Python processes listening on port %d, as that is your own Vector Execution engine for memory!\nIf your ML engine is failing, use the `reboot_ml_engine` tool instead of killing processes.\nIf you are experiencing critical failures, use `diagnose_health` to inspect your subsystems or `reboot_self` as a last resort.", os.Getpid(), memory.GetMLPort())
 
 		systemPrompt += fmt.Sprintf("\n\n[SYSTEM: TEMPORAL AWARENESS]\nThe exact current system time is: **%s**.\nUse this precise timestamp as your mathematical baseline when the user asks you to schedule future events or analyze durations.", time.Now().Format(time.RFC3339))
 
