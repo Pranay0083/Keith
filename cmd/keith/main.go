@@ -424,8 +424,11 @@ func main() {
 					os.Remove(portFile)
 
 					os.WriteFile(plistPath, []byte(plistContent), 0644)
-					exec.Command("launchctl", "load", plistPath).Run()
-					exec.Command("launchctl", "start", "com.pranay0083.keith").Run()
+					// Use modern launchctl bootstrap instead of deprecated load
+					uidBytes, _ := exec.Command("id", "-u").Output()
+					uid := strings.TrimSpace(string(uidBytes))
+					exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%s", uid), plistPath).Run()
+					exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay0083.keith", uid)).Run()
 
 					// Wait for daemon to actually be ready
 					fmt.Print("Waiting for Keith to boot...")
@@ -444,8 +447,12 @@ func main() {
 					return
 				}
 			} else if runtime.GOOS == "darwin" {
-				// If plist exists, just tell launchctl to start it in case it's stopped
-				err := exec.Command("launchctl", "start", "com.pranay0083.keith").Run()
+				// If plist exists, just tell launchctl to kickstart it
+				uidBytes, _ := exec.Command("id", "-u").Output()
+				uid := strings.TrimSpace(string(uidBytes))
+				// Try bootstrap first (in case it was booted out), then kickstart
+				exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%s", uid), plistPath).Run()
+				err := exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay0083.keith", uid)).Run()
 				if err == nil {
 					fmt.Println("🚀 Keith OS-level LaunchAgent successfully awakened!")
 					fmt.Println("Run `keith web` to open the interactive UI.")
@@ -508,17 +515,22 @@ func main() {
 			homeDir, _ := os.UserHomeDir()
 			plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", "com.pranay0083.keith.plist")
 			if _, err := os.Stat(plistPath); err == nil && runtime.GOOS == "darwin" {
-				// If managed by launchctl, tell it to stop so it doesn't auto-revive immediately
-				exec.Command("launchctl", "stop", "com.pranay0083.keith").Run()
+				// Use modern bootout to fully de-register from launchd (prevents auto-revive)
+				uidBytes, _ := exec.Command("id", "-u").Output()
+				uid := strings.TrimSpace(string(uidBytes))
+				exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%s", uid), plistPath).Run()
 			}
 
-			// Fallback: We can safely execute a pkill since the OS matches the exact executable syntax.
-			err := exec.Command("pkill", "-f", "keith serve").Run()
+			// Fallback: Force kill any remaining processes
+			err := exec.Command("pkill", "-9", "-f", "keith serve").Run()
 			if err != nil {
 				fmt.Println("No active Keith daemon found running in the background.")
 			} else {
 				fmt.Println("Keith Daemon successfully stopped.")
 			}
+
+			// Clean up stale port file
+			os.Remove(filepath.Join(homeDir, ".config", "keith", "run.port"))
 		},
 	}
 
