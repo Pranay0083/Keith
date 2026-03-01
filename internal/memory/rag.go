@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Supported text and source code extensions
@@ -109,7 +110,73 @@ func IngestDirectory(rootPath string) (int, error) {
 	return totalChunks, nil
 }
 
-// chunkFile reads a file and breaks it into overlapping string chunks.
+// IngestDirectoryIncremental only re-chunks files modified after the given cutoff time.
+// This makes workspace updates dramatically faster for large codebases.
+func IngestDirectoryIncremental(rootPath string, since time.Time) (int, error) {
+	absPath, err := filepath.Abs(rootPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to resolve absolute path: %w", err)
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil || !info.IsDir() {
+		return 0, fmt.Errorf("invalid directory path: %s", absPath)
+	}
+
+	filePaths := []string{}
+	err = filepath.WalkDir(absPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if ignoredDirectories[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if !supportedExtensions[ext] {
+			return nil
+		}
+		// Only include files modified after the cutoff
+		if fi, err := d.Info(); err == nil && fi.ModTime().After(since) {
+			filePaths = append(filePaths, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("error walking directory: %w", err)
+	}
+
+	totalChunks := 0
+	for _, fp := range filePaths {
+		// Delete old chunks for this specific file before re-ingesting
+		if db != nil {
+			db.Exec("DELETE FROM ingested_files WHERE filepath = ?", fp)
+		}
+
+		chunks, err := chunkFile(fp)
+		if err != nil {
+			fmt.Printf("Warning: failed to chunk file %s: %v\n", fp, err)
+			continue
+		}
+		for i, chunkText := range chunks {
+			if err := saveCodeChunk(fp, i, chunkText); err != nil {
+				fmt.Printf("Warning: failed to vector-index chunk %d of %s: %v\n", i, fp, err)
+				continue
+			}
+			totalChunks++
+		}
+	}
+
+	// Update the workspace timestamp
+	if totalChunks > 0 || len(filePaths) == 0 {
+		TrackWorkspace(absPath)
+	}
+
+	return totalChunks, nil
+}
+
 // Optimized for all-MiniLM 384-dimensional matrices (approx 500 chars).
 func chunkFile(filePath string) ([]string, error) {
 	bytes, err := os.ReadFile(filePath)

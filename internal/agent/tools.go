@@ -31,7 +31,7 @@ func (s *ShellTool) Name() string {
 }
 
 func (s *ShellTool) Description() string {
-	return "Executes a shell command. Arguments: 'command'."
+	return "Executes a shell command. Arguments: 'command' (required), 'is_background' (optional, 'true' to run detached), 'timeout' (optional, seconds as string, default 60), 'expected_duration' (optional, estimated seconds the command will take — helps optimize timeout management)."
 }
 
 func (s *ShellTool) Execute(args map[string]string) (string, error) {
@@ -539,6 +539,10 @@ func NewToolRegistry() *ToolRegistry {
 	r.Register(&RebootMLEngineTool{})
 	r.Register(&RebootSelfTool{})
 	r.Register(NewDiagnoseHealthTool())
+	// Phase 21: Autonomous Codebase Management Tools
+	r.Register(&IngestCodebaseTool{})
+	r.Register(&UpdateCodebaseTool{})
+	r.Register(&CleanCodebaseTool{})
 	return r
 }
 
