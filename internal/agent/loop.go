@@ -59,6 +59,22 @@ func (s *AgentSession) ProcessMessage(userMessage string, model string, onProgre
 		systemPrompt = identityContext
 		systemPrompt += fmt.Sprintf("\n\n[SYSTEM: SELF-PRESERVATION DIRECTIVE]\nYour own local Daemon Process ID (PID) is **%d**.\n NEVER attempt to kill this PID. It will terminate your own brain and the user's Web UI connection.\nAdditionally, NEVER kill any Python processes listening on port %d, as that is your own Vector Execution engine for memory!\nIf your ML engine is failing, use the `reboot_ml_engine` tool instead of killing processes.\nIf you are experiencing critical failures, use `diagnose_health` to inspect your subsystems or `reboot_self` as a last resort.", os.Getpid(), memory.GetMLPort())
 
+		// Phase 21: Inject ingested workspace awareness for smart ingest-before-search
+		if workspaces, wsErr := memory.GetIngestedWorkspaces(); wsErr == nil && len(workspaces) > 0 {
+			wsList := ""
+			for _, ws := range workspaces {
+				ingestTime, _ := memory.GetWorkspaceIngestTime(ws)
+				stale := ""
+				if time.Since(ingestTime) > 1*time.Hour {
+					stale = " [STALE — consider update_codebase]"
+				}
+				wsList += fmt.Sprintf("\n  - %s (ingested: %s)%s", ws, ingestTime.Format(time.RFC3339), stale)
+			}
+			systemPrompt += fmt.Sprintf("\n\n[SYSTEM: INGESTED CODEBASES]\nThe following codebases are vectorized in your Supermemory RAG:%s\nBEFORE using `search_codebase`, verify the target workspace is in this list. If not, call `ingest_codebase` first.\nIf a workspace is marked STALE, call `update_codebase` before searching to get fresh results.", wsList)
+		} else {
+			systemPrompt += "\n\n[SYSTEM: INGESTED CODEBASES]\nNo codebases are currently ingested. If the user asks about a codebase, use `ingest_codebase` first to vectorize it, then `search_codebase` to find relevant code."
+		}
+
 		systemPrompt += fmt.Sprintf("\n\n[SYSTEM: TEMPORAL AWARENESS]\nThe exact current system time is: **%s**.\nUse this precise timestamp as your mathematical baseline when the user asks you to schedule future events or analyze durations.", time.Now().Format(time.RFC3339))
 
 		if accs, accsErr := config.LoadAccounts(); accsErr == nil && accs.SuperUser != "" {
@@ -113,8 +129,61 @@ func (s *AgentSession) ProcessMessage(userMessage string, model string, onProgre
 
 	loopCount := 0
 	maxLoops := 25
+	hardCap := 50 // Phase 21: absolute safety ceiling
 
-	for loopCount < maxLoops {
+	for loopCount < hardCap {
+		// Phase 21: Dynamic loop extension — ask Keith if he needs more loops
+		if loopCount >= maxLoops {
+			s.history = append(s.history, map[string]interface{}{
+				"role": "user",
+				"parts": []map[string]interface{}{
+					{"text": fmt.Sprintf("[SYSTEM: LOOP LIMIT REACHED] You have used %d/%d loops. If you need more loops to complete your current task, respond ONLY with EXTEND_LOOPS:<N> where N is the additional loops needed (max %d more). Otherwise, finalize your response now.", loopCount, maxLoops, hardCap-maxLoops)},
+				},
+			})
+
+			var extResp string
+			switch provider {
+			case config.ProviderAntigravity:
+				extResp, err = client.GenerateChat(s.history, model, "", systemPrompt, tools)
+			case config.ProviderAPIKey:
+				extResp, err = client.GenerateChatGemini(s.history, model, systemPrompt, tools, tok, true)
+			}
+
+			if err == nil && strings.HasPrefix(strings.TrimSpace(extResp), "EXTEND_LOOPS:") {
+				extStr := strings.TrimPrefix(strings.TrimSpace(extResp), "EXTEND_LOOPS:")
+				var extN int
+				if _, parseErr := fmt.Sscanf(extStr, "%d", &extN); parseErr == nil && extN > 0 {
+					if maxLoops+extN > hardCap {
+						extN = hardCap - maxLoops
+					}
+					maxLoops += extN
+					fmt.Printf("[Loop Control] Keith extended loop limit by %d → new max: %d\n", extN, maxLoops)
+					if onProgress != nil {
+						onProgress(fmt.Sprintf("[SYSTEM] Loop limit extended by %d → %d/%d", extN, loopCount, maxLoops))
+					}
+					s.history = append(s.history, map[string]interface{}{
+						"role": "model",
+						"parts": []map[string]interface{}{
+							{"text": extResp},
+						},
+					})
+					// Continue with extended loops
+				} else {
+					// Parse failed, finalize
+					if extResp != "" {
+						return extResp, nil
+					}
+					break
+				}
+			} else {
+				// Keith chose to finalize
+				if extResp != "" {
+					return extResp, nil
+				}
+				break
+			}
+		}
+
 		loopCount++
 
 		fmt.Printf("[Loop %d] Generating step...\n", loopCount)
@@ -270,5 +339,5 @@ func (s *AgentSession) ProcessMessage(userMessage string, model string, onProgre
 		return resp, nil
 	}
 
-	return "Agent Loop Error: Exceeded maximum tool iteration limit (5 loops).", nil
+	return "Agent Loop Error: Exceeded maximum tool iteration limit.", nil
 }

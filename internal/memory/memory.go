@@ -100,6 +100,40 @@ func GetIngestedWorkspaces() ([]string, error) {
 	return workspaces, nil
 }
 
+// DeleteChunksForWorkspace removes all ingested file chunks for a given workspace path prefix.
+func DeleteChunksForWorkspace(path string) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("database not initialized")
+	}
+	result, err := db.Exec("DELETE FROM ingested_files WHERE filepath LIKE ?", path+"%")
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// RemoveWorkspace deletes a workspace tracking entry.
+func RemoveWorkspace(path string) error {
+	if db == nil {
+		return fmt.Errorf("database not initialized")
+	}
+	_, err := db.Exec("DELETE FROM ingested_workspaces WHERE path = ?", path)
+	return err
+}
+
+// GetWorkspaceIngestTime returns the last ingest timestamp for a workspace, or zero time if not found.
+func GetWorkspaceIngestTime(path string) (time.Time, error) {
+	if db == nil {
+		return time.Time{}, fmt.Errorf("database not initialized")
+	}
+	var ingestedAt time.Time
+	err := db.QueryRow("SELECT ingested_at FROM ingested_workspaces WHERE path = ?", path).Scan(&ingestedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return ingestedAt, nil
+}
+
 // saveCodeChunk handles persisting a file chunk into the Workspace Vector database
 func saveCodeChunk(filePath string, chunkIndex int, content string) error {
 	if db == nil {
