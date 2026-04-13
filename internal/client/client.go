@@ -44,7 +44,7 @@ func discoverProject(accessToken string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.19.4 darwin/arm64")
+	req.Header.Set("User-Agent", "antigravity/1.20.5 darwin/arm64")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -112,7 +112,7 @@ func onboardUser(accessToken string, tierID string) (string, error) {
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "antigravity/1.19.4 darwin/arm64")
+		req.Header.Set("User-Agent", "antigravity/1.20.5 darwin/arm64")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -189,7 +189,7 @@ func FetchAvailableModels() (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.19.4 darwin/arm64")
+	req.Header.Set("User-Agent", "antigravity/1.20.5 darwin/arm64")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -273,7 +273,7 @@ func GenerateChat(contents []map[string]interface{}, modelID string, thinkingLev
 		"project":     projectID,
 		"requestId":   fmt.Sprintf("keith-%d", time.Now().Unix()),
 		"model":       model.ID,
-		"userAgent":   "antigravity/1.19.4 darwin/arm64",
+		"userAgent":   "antigravity/1.20.5 darwin/arm64",
 		"requestType": "agent",
 		"request":     reqBody,
 	}
@@ -290,7 +290,7 @@ func GenerateChat(contents []map[string]interface{}, modelID string, thinkingLev
 
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "antigravity/1.19.4 darwin/arm64")
+	req.Header.Set("User-Agent", "antigravity/1.20.5 darwin/arm64")
 
 	httpClient := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := httpClient.Do(req)

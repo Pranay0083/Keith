@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import numpy; print\\(''numpy OK''\\)\")",
+      "Bash(python3 -m pip install numpy --quiet)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(pip install:*)",
+      "Bash(python3 benchmark.py)",
+      "Bash(.venv/bin/python3 benchmark.py 2>&1)"
+    ]
+  }
+}
