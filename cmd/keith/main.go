@@ -303,7 +303,7 @@ func main() {
 				}
 				if accs.SuperUser == "" {
 					reader := bufio.NewReader(os.Stdin)
-					fmt.Print("Enter the SuperUser Owner Name (e.g., Pranay0083): ")
+					fmt.Print("Enter the SuperUser Owner Name (e.g., Pranay): ")
 					su, _ := reader.ReadString('\n')
 					su = strings.TrimSpace(su)
 					if su != "" {
@@ -373,7 +373,7 @@ func main() {
 			}
 
 			// Phase 18.3: macOS LaunchAgent Immortalization
-			plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", "com.pranay0083.keith.plist")
+			plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", "com.pranay.keith.plist")
 
 			if _, err := os.Stat(plistPath); os.IsNotExist(err) && runtime.GOOS == "darwin" {
 				reader := bufio.NewReader(os.Stdin)
@@ -395,7 +395,7 @@ func main() {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.pranay0083.keith</string>
+    <string>com.pranay.keith</string>
     <key>ProgramArguments</key>
     <array>
         <string>%s</string>
@@ -428,7 +428,7 @@ func main() {
 					uidBytes, _ := exec.Command("id", "-u").Output()
 					uid := strings.TrimSpace(string(uidBytes))
 					exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%s", uid), plistPath).Run()
-					exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay0083.keith", uid)).Run()
+					exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay.keith", uid)).Run()
 
 					// Wait for daemon to actually be ready
 					fmt.Print("Waiting for Keith to boot...")
@@ -452,7 +452,7 @@ func main() {
 				uid := strings.TrimSpace(string(uidBytes))
 				// Try bootstrap first (in case it was booted out), then kickstart
 				exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%s", uid), plistPath).Run()
-				err := exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay0083.keith", uid)).Run()
+				err := exec.Command("launchctl", "kickstart", "-kp", fmt.Sprintf("gui/%s/com.pranay.keith", uid)).Run()
 				if err == nil {
 					fmt.Println("🚀 Keith OS-level LaunchAgent successfully awakened!")
 					fmt.Println("Run `keith web` to open the interactive UI.")
@@ -513,7 +513,7 @@ func main() {
 			fmt.Println("Sending termination signal to Keith Daemon...")
 
 			homeDir, _ := os.UserHomeDir()
-			plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", "com.pranay0083.keith.plist")
+			plistPath := filepath.Join(homeDir, "Library", "LaunchAgents", "com.pranay.keith.plist")
 			if _, err := os.Stat(plistPath); err == nil && runtime.GOOS == "darwin" {
 				// Use modern bootout to fully de-register from launchd (prevents auto-revive)
 				uidBytes, _ := exec.Command("id", "-u").Output()

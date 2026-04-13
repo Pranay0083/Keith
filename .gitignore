@@ -2,3 +2,5 @@ keith
 internal/config/secrets/
 .DS_Store
 *.port
+.venv
+__pycache__

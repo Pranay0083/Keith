@@ -25,7 +25,7 @@ To run Keith from source or build the binary, you need the following host depend
 Pull the repository and compile the native Unix binary into your `~/.local/bin`. Ensure `~/.local/bin` is in your `$PATH`.
 
 ```bash
-git clone git.com:Pranay0083/Keith.git
+git clone git@github.com:pranay0083/keith.git
 cd keith
 go build -o keith ./cmd/keith
 cp keith ~/.local/bin/keith

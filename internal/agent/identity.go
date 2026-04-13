@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Pranay0083/keith/internal/config"
+	"github.com/pranay0083/keith/internal/config"
 )
 
 const (

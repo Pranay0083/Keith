@@ -145,7 +145,7 @@ Installing collected packages: mpmath, typing_extensions, tqdm, threadpoolctl, s
 Successfully installed annotated-doc-0.0.4 anyio-4.12.1 blinker-1.9.0 certifi-2026.2.25 click-8.3.1 filelock-3.24.3 flask-3.1.3 fsspec-2026.2.0 h11-0.16.0 hf-xet-1.3.1 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.5.0 idna-3.11 itsdangerous-2.2.0 jinja2-3.1.6 joblib-1.5.3 markdown-it-py-4.0.0 markupsafe-3.0.3 mdurl-0.1.2 mpmath-1.3.0 networkx-3.6.1 numpy-2.4.2 packaging-26.0 pygments-2.19.2 pyyaml-6.0.3 regex-2026.2.19 rich-14.3.3 safetensors-0.7.0 scikit-learn-1.8.0 scipy-1.17.1 sentence-transformers-5.2.3 setuptools-82.0.0 shellingham-1.5.4 sympy-1.14.0 threadpoolctl-3.6.0 tokenizers-0.22.2 torch-2.10.0 tqdm-4.67.3 transformers-5.2.0 typer-0.24.1 typer-slim-0.24.0 typing_extensions-4.15.0 werkzeug-3.1.6
 
 [notice] A new release of pip is available: 25.3 -> 26.0.1
-[notice] To update, run: /Users/pranayvishwakarma/.config/keith/embedder/venv/bin/python3.14 -m pip install --upgrade pip
+[notice] To update, run: /Users/pranay/.config/keith/embedder/venv/bin/python3.14 -m pip install --upgrade pip
 [Phase 3D] Spawning Vector Matrix Engine...
 [Phase 3D] Terminating Python ML Subprocess...
 Warning: Failed to start Python Vector Engine: python vector engine failed to bind to port 8046 in time

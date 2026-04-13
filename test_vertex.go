@@ -2,7 +2,7 @@ package main
 
 import (
     "fmt"
-    "github.com/Pranay0083/keith/internal/token"
+    "github.com/pranay0083/keith/internal/token"
     "bytes"
     "net/http"
     "io"
