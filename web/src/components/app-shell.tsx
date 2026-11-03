@@ -121,11 +121,18 @@ export function AppShell({ children }: { children: ReactNode }) {
             </span>
             Keith
           </Link>
-          {isMock ? (
-            <Badge tone="warn" className="font-mono">
-              mock
-            </Badge>
-          ) : null}
+          <div className="flex items-center gap-1">
+            {isMock ? (
+              <Badge tone="warn" className="font-mono">
+                mock
+              </Badge>
+            ) : null}
+            {value ? (
+              <Button variant="ghost" size="sm" onClick={signOut} aria-label="Sign out" title="Sign out" className="md:hidden">
+                <LogOutIcon />
+              </Button>
+            ) : null}
+          </div>
         </div>
 
         <nav aria-label="Main" className="flex gap-1 overflow-x-auto px-2 pb-2 md:flex-col md:overflow-visible md:px-3">

@@ -2,8 +2,10 @@
 
 // useSessionEvents connects a session view to its event stream: it owns the
 // reducer state, an EventStream with backoff and after_seq replay, and the
-// gap watchdog. Events are batched per animation frame so a replay of
-// thousands of events renders once, not thousands of times.
+// gap watchdog. Events are batched on a short timer so a replay of
+// thousands of events renders once, not thousands of times. (A timer, not
+// requestAnimationFrame: rAF stops in background tabs and headless browsers,
+// and the state should keep up there too.)
 
 import { useCallback, useEffect, useReducer, useRef, type Dispatch } from "react";
 import { getApi, isApiError } from "@/lib/api/client";
@@ -13,6 +15,9 @@ import { EventStream, type ProbeResult } from "./stream";
 
 /** How long a gap in seq may persist before the stream reconnects to refill it. */
 export const GAP_RESYNC_MS = 3_000;
+
+/** How long events collect before they are applied in one render. */
+const BATCH_MS = 16;
 
 export interface SessionEvents {
   state: SessionState;
@@ -32,19 +37,15 @@ export function useSessionEvents(sessionId: string): SessionEvents {
 
   useEffect(() => {
     let cancelled = false;
-    let frame = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const queue: SessionEvent[] = [];
 
     const flush = () => {
-      frame = 0;
+      timer = null;
       if (queue.length > 0) dispatch({ type: "events", events: queue.splice(0) });
     };
     const schedule = () => {
-      if (frame) return;
-      frame =
-        typeof requestAnimationFrame === "function"
-          ? requestAnimationFrame(flush)
-          : (setTimeout(flush, 16) as unknown as number);
+      if (timer === null) timer = setTimeout(flush, BATCH_MS);
     };
 
     void getApi().then((api) => {
@@ -79,10 +80,7 @@ export function useSessionEvents(sessionId: string): SessionEvents {
 
     return () => {
       cancelled = true;
-      if (frame) {
-        if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
-        else clearTimeout(frame);
-      }
+      if (timer !== null) clearTimeout(timer);
       streamRef.current?.stop();
       streamRef.current = null;
     };

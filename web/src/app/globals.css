@@ -186,65 +186,37 @@ body {
   background-color: transparent !important;
 }
 
-/* react-diff-view, restyled with our tokens. */
-.diff {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-family: var(--font-mono);
+/* react-diff-view: its stylesheet reads these variables; map them to our tokens. */
+.keith-diff {
+  --diff-background-color: transparent;
+  --diff-text-color: var(--fg);
+  --diff-font-family: var(--font-mono);
+  --diff-selection-background-color: color-mix(in srgb, var(--accent) 25%, transparent);
+  --diff-gutter-insert-background-color: var(--diff-add-strong);
+  --diff-gutter-delete-background-color: var(--diff-del-strong);
+  --diff-code-insert-background-color: var(--diff-add);
+  --diff-code-delete-background-color: var(--diff-del);
+  --diff-code-insert-edit-background-color: var(--diff-add-strong);
+  --diff-code-delete-edit-background-color: var(--diff-del-strong);
   font-size: 12px;
-  line-height: 1.55;
 }
-.diff-gutter-col {
-  width: 3.25em;
+.keith-diff .diff-gutter-col {
+  width: 5ch;
 }
-.diff-gutter {
-  padding: 0 0.5em;
-  text-align: right;
+.keith-diff .diff-gutter {
   color: var(--subtle);
-  user-select: none;
   cursor: default;
 }
-.diff-gutter:empty::before,
-.diff-gutter[data-line-number]::before {
-  content: attr(data-line-number);
-}
-.diff-code {
-  padding: 0 0.75em;
-  white-space: pre-wrap;
-  word-break: break-word;
+.keith-diff .diff-gutter-insert,
+.keith-diff .diff-gutter-delete {
   color: var(--fg);
 }
-.diff-code-insert,
-.diff-gutter-insert {
-  background: var(--diff-add);
+.keith-diff .diff-code {
+  padding-right: 1ch;
+  word-break: break-word;
 }
-.diff-code-delete,
-.diff-gutter-delete {
-  background: var(--diff-del);
-}
-.diff-code-edit {
-  background: transparent;
-}
-.diff-code-insert .diff-code-edit {
-  background: var(--diff-add-strong);
-}
-.diff-code-delete .diff-code-edit {
-  background: var(--diff-del-strong);
-}
-.diff-hunk-header {
+.keith-diff .diff-decoration-content {
+  padding: 2px 1ch;
   background: var(--panel);
   color: var(--subtle);
-}
-.diff-hunk-header-content {
-  padding: 2px 0.75em;
-  font-family: var(--font-mono);
-}
-.diff-decoration-content {
-  padding: 2px 0.75em;
-  font-family: var(--font-mono);
-  color: var(--subtle);
-}
-.diff-omit {
-  background: transparent;
 }
