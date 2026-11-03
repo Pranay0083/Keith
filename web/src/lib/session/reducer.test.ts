@@ -192,6 +192,41 @@ describe("streaming assistant messages", () => {
     ]);
   });
 
+  it("drops a stream whose model call was retried once the retry's final message arrives", () => {
+    let s = applyEvents(fresh(), [
+      ev(1, "message.user", { message_id: "m_keithprompt", text: "Fix it" }),
+      ev(2, "session.status", { status: "running" }),
+      ev(0, "message.delta", { message_id: "a1", text: "I'll start by rea" }), // the call fails mid-stream
+      ev(0, "message.delta", { message_id: "a2", text: "I'll start by reading" }), // the retry
+    ]);
+    expect(messages(s).filter((m) => m.streaming).map((m) => m.id)).toEqual(["a1", "a2"]);
+
+    s = applyEvent(s, ev(3, "message.assistant", { message_id: "a2", text: "I'll start by reading the tests." }));
+    expect(messages(s).map((m) => [m.id, m.streaming])).toEqual([
+      ["m_keithprompt", false],
+      ["a2", false],
+    ]);
+  });
+
+  it("drops a stream that never finished once the agent runs a tool", () => {
+    const s = applyEvents(fresh(), [
+      ev(0, "message.delta", { message_id: "a1", text: "Let me" }), // the call fails mid-stream
+      ev(1, "tool_call.started", { call_id: "toolu_1", tool: "read_file", input: { path: "a.ts" } }), // the retry wrote no text
+    ]);
+    expect(messages(s)).toEqual([]);
+    expect(s.steps).toHaveLength(1);
+  });
+
+  it("stops a stream where it got to when the session ends", () => {
+    let s = applyEvents(fresh(), [
+      ev(0, "message.delta", { message_id: "a1", text: "Looking at the" }),
+      ev(1, "session.status", { status: "cancelled", reason: "Stopped by user" }),
+    ]);
+    expect(messages(s)).toMatchObject([{ id: "a1", text: "Looking at the", streaming: false }]);
+    s = applyEvent(s, ev(0, "message.delta", { message_id: "a1", text: " tests" }));
+    expect(messages(s)[0]?.text).toBe("Looking at the");
+  });
+
   it("shows a final message that had no deltas", () => {
     const s = applyEvent(fresh(), ev(1, "message.assistant", { message_id: "a9", text: "Opened the PR." }));
     expect(messages(s)[0]).toMatchObject({ role: "assistant", streaming: false });

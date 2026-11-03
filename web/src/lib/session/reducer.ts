@@ -302,7 +302,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
         seq: e.seq,
       };
       // The final text replaces whatever the deltas built up.
-      return { ...state, chat: upsertMessage(state.chat, msg, () => msg) };
+      return { ...state, chat: upsertMessage(dropAbandonedStreams(state.chat, msg.id), msg, () => msg) };
     }
 
     case "message.delta": {
@@ -332,6 +332,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
     case "tool_call.started": {
       const p = e.payload;
       if (state.steps.some((s) => s.callId === p.call_id)) return state;
+      const chat = dropAbandonedStreams(state.chat);
       const step: ToolStep = {
         callId: p.call_id,
         tool: p.tool,
@@ -347,7 +348,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
         output: "",
         seq: e.seq,
       };
-      return { ...state, steps: [...state.steps, step] };
+      return { ...state, chat, steps: [...state.steps, step] };
     }
 
     case "tool_call.output": {
@@ -480,15 +481,33 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
   }
 }
 
-/** When a session ends, running steps stop and an open question lapses. */
+/**
+ * When a session ends, running steps stop, a message still streaming stops
+ * where it got to (the run was cut short), and an open question lapses.
+ */
 function settleOnTerminal(state: SessionState): SessionState {
   const steps = state.steps.some((s) => s.status === "running")
     ? state.steps.map((s) => (s.status === "running" ? { ...s, status: "interrupted" as const } : s))
     : state.steps;
-  if (!state.openQuestionId) return { ...state, steps };
   const qid = state.openQuestionId;
-  const chat = state.chat.map((c) => (c.kind === "question" && c.id === qid ? { ...c, expired: true } : c));
+  const chat = state.chat.map((c) => {
+    if (c.kind === "message") return c.streaming ? { ...c, streaming: false } : c;
+    return c.id === qid ? { ...c, expired: true } : c;
+  });
   return { ...state, steps, chat, openQuestionId: null };
+}
+
+/**
+ * Drops assistant messages still streaming, other than `keep`. A model call
+ * streams its deltas, then stores its message.assistant (if it wrote text),
+ * then runs its tools. So once a later message.assistant or tool call
+ * arrives, a message still streaming will never get its final text: it was
+ * a model call that failed and was retried, or was cut short. Its deltas
+ * were never stored, so a reload would not show it either.
+ */
+function dropAbandonedStreams(chat: ChatItem[], keep?: string): ChatItem[] {
+  const abandoned = (c: ChatItem) => c.kind === "message" && c.streaming && c.id !== keep;
+  return chat.some(abandoned) ? chat.filter((c) => !abandoned(c)) : chat;
 }
 
 function findMessage(chat: readonly ChatItem[], id: string): number {
