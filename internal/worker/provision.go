@@ -436,7 +436,7 @@ func (s *session) writeToken(ctx context.Context, value string) error {
 // tool_call.output for the agent's current call on that shell (or the
 // worker's own synthetic call).
 func (s *session) attachShells() {
-	s.shells = s.w.d.NewShells(s.sb, s.user(), func(shell string, chunk []byte) {
+	sh := s.w.d.NewShells(s.sb, s.user(), func(shell string, chunk []byte) {
 		callID := ""
 		if r := s.agentRun.Load(); r != nil {
 			callID = r.CurrentCall(shell)
@@ -448,6 +448,8 @@ func (s *session) attachShells() {
 		}
 		s.em.shellOutput(context.Background(), shell, chunk, callID)
 	})
+	s.shells = sh
+	s.sharedShells.Store(&sh)
 }
 
 // clone clones a repo (or refreshes the copy a snapshot holds) and

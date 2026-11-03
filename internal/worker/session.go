@@ -60,16 +60,18 @@ type session struct {
 	repos []*repoState
 
 	// The environment, set up once per task by ensureEnv.
-	envReady   bool
-	sb         sandbox.Sandbox
-	shells     Shells
-	sbTokens   TokenSource
-	host       agent.RepoHost
-	hostTokens TokenSource
-	tokenStop  context.CancelFunc
-	tokenDone  chan struct{}
-	tokenFile  *tokenFile
-	issue      *issueRef
+	envReady bool
+	sb       sandbox.Sandbox
+	shells   Shells
+	// sharedShells publishes shells to the stop watcher goroutine.
+	sharedShells atomic.Pointer[Shells]
+	sbTokens     TokenSource
+	host         agent.RepoHost
+	hostTokens   TokenSource
+	tokenStop    context.CancelFunc
+	tokenDone    chan struct{}
+	tokenFile    *tokenFile
+	issue        *issueRef
 
 	prov     llm.Provider
 	state    *agent.State
@@ -402,10 +404,11 @@ func (s *session) watchStop(ctx context.Context) func() {
 
 // interruptShells sends Ctrl-C to every shell.
 func (s *session) interruptShells(ctx context.Context) {
-	sh := s.shells
-	if sh == nil {
+	p := s.sharedShells.Load() // the watcher goroutine calls this too
+	if p == nil {
 		return
 	}
+	sh := *p
 	for _, name := range sh.List() {
 		if err := sh.Interrupt(ctx, name); err != nil && ctx.Err() == nil {
 			s.log.Debug("interrupt shell", "shell", name, "err", err)
