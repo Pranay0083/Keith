@@ -29,6 +29,9 @@ var errLeaseLost = errors.New("worker: session lease lost")
 //     one secrets.Stream per shell, so a secret split across chunks is
 //     still caught, and flushes those streams before each
 //     tool_call.finished so a call's output precedes its finish,
+//   - redacts message.delta through one secrets.Stream per message ID
+//     for the same reason, flushed before that message's
+//     message.assistant,
 //   - records the open question (store.SetOpenQuestion) before
 //     question.asked is stored, so /answers accepts it as soon as the UI
 //     shows it.
@@ -48,6 +51,14 @@ type emitter struct {
 	gen     int
 	streams map[string]*shellStream
 	order   []string
+	// deltas are the live message.delta streams, by message ID.
+	deltas map[string]*deltaStream
+}
+
+// deltaStream redacts one assistant message's streamed text.
+type deltaStream struct {
+	s   *secrets.Stream
+	gen int
 }
 
 type shellStream struct {
@@ -66,6 +77,7 @@ func newEmitter(sessionID string, store events.Store, bus events.Bus, l Lease, l
 		lease:     l,
 		log:       log,
 		streams:   map[string]*shellStream{},
+		deltas:    map[string]*deltaStream{},
 	}
 }
 
@@ -101,8 +113,17 @@ func (e *emitter) redact(s string) string { return e.redactor().String(s) }
 func (e *emitter) Emit(ctx context.Context, typ string, payload any) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if typ == events.TypeToolCallFinished {
+	switch typ {
+	case events.TypeToolCallFinished:
 		e.flushLocked(ctx)
+	case events.TypeMessageDelta:
+		if p, ok := payload.(events.MessageDeltaPayload); ok {
+			return e.deltaLocked(ctx, p)
+		}
+	case events.TypeMessageAssistant:
+		if p, ok := payload.(events.MessageAssistantPayload); ok {
+			e.endDeltasLocked(ctx, p.MessageID)
+		}
 	}
 	if typ == events.TypeQuestionAsked && e.onQuestion != nil {
 		if p, ok := payload.(events.QuestionAskedPayload); ok {
@@ -127,6 +148,44 @@ func (e *emitter) appendLocked(ctx context.Context, typ string, payload any) err
 	}
 	_, err = e.em.Emit(ctx, e.sessionID, typ, json.RawMessage(scrubNUL(raw)))
 	return err
+}
+
+// deltaLocked publishes a message.delta through its message's stream:
+// a secret split across deltas is held back until it can be redacted
+// whole, so live viewers never see it.
+func (e *emitter) deltaLocked(ctx context.Context, p events.MessageDeltaPayload) error {
+	d := e.deltas[p.MessageID]
+	text := p.Text
+	if d == nil || d.gen != e.gen {
+		if d != nil {
+			// New secrets: what the old stream held back goes through
+			// the new one, so a new secret spanning it is still caught.
+			text = d.s.Flush() + text
+		}
+		d = &deltaStream{s: e.red.Stream(), gen: e.gen}
+		e.deltas[p.MessageID] = d
+	}
+	return e.publishDeltaLocked(ctx, p.MessageID, d.s.Write(text))
+}
+
+// endDeltasLocked publishes what messageID's stream holds back, before
+// its message.assistant, and drops every delta stream (others belong to
+// attempts that were retried).
+func (e *emitter) endDeltasLocked(ctx context.Context, messageID string) {
+	if d := e.deltas[messageID]; d != nil {
+		if err := e.publishDeltaLocked(ctx, messageID, d.s.Flush()); err != nil &&
+			ctx.Err() == nil && !errors.Is(err, errLeaseLost) {
+			e.log.Debug("publish the last message.delta", "err", err)
+		}
+	}
+	clear(e.deltas)
+}
+
+func (e *emitter) publishDeltaLocked(ctx context.Context, messageID, text string) error {
+	if text == "" {
+		return nil
+	}
+	return e.appendLocked(ctx, events.TypeMessageDelta, events.MessageDeltaPayload{MessageID: messageID, Text: text})
 }
 
 // scrubNUL replaces \u0000 escapes in JSON with \ufffd: Postgres jsonb

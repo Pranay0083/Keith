@@ -108,7 +108,7 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
 1. **Lease.** Take the session's Redis lease, or return `queue.ErrBusy`; the task is then retried in 5 s without counting as a failure.
    - `KeepAlive` renews the lease, and if it is lost, the run's context is cancelled.
    - The event emitter checks the lease before every append. pgevents does not check the fencing token, so this closes the fencing gap.
-   - The emitter also redacts every payload with a `secrets.Redactor`, built from the session's decrypted org and repo secrets plus the sandbox git token as it rotates. It streams shell output through `Redactor.Stream`, so a secret split across chunks is still caught.
+   - The emitter also redacts every payload with a `secrets.Redactor`, built from the session's decrypted org and repo secrets plus the sandbox git token as it rotates. It streams shell output (one stream per shell) and `message.delta` (one stream per message, flushed before its `message.assistant`) through `Redactor.Stream`, so a secret split across chunks or deltas is still caught.
 2. **Provision** (a new session, or one whose sandbox was reaped).
    - **Two GitHub installation tokens** per session:
      - *Sandbox token*: `contents: write` on the session's repos only. It reaches the sandbox only as `/run/keith/git-token`, read by the git credential helper. The helper is installed as root at `/usr/local/bin/git-credential-keith` and answers only for `GIT_BASE_URL`'s host. The token file is rewritten from the token source's refresh hook, so the token rotates without re-cloning.
