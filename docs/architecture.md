@@ -25,6 +25,7 @@ cmd/keith ── wires config and services
                          └── the only package that imports everything
 
 internal/agent      → llm, sandbox, events          (loop, tools, prompt)
+internal/agent/agenttest → agent, events, llm, sandbox  fakes + append-only check
 internal/llm        → (nothing internal)             contract + llmtest fake
 internal/llm/{anthropic,gemini}   → llm              SDKs stay inside
 internal/sandbox    → (nothing internal)             contract
@@ -64,3 +65,86 @@ Each session has one append-only log in `events`, keyed `(session_id, seq)`. The
 4. User input goes through plain API requests. A mid-run message is queued for the next model turn. Stop sets `sessions.cancel_requested_at`, which the worker checks between steps, and interrupts the running shell.
 
 Chat has no table of its own: it is the `message.*` rows in `events`. The model's own conversation lives in `agent_state.llm_messages` so a paused session resumes exactly.
+
+## Agent loop (`internal/agent`)
+
+The loop runs in the worker, outside the sandbox. It reaches the sandbox only through `sandbox.Sandbox` and `sandbox.Shells`, and GitHub only through `agent.RepoHost`.
+
+### Wiring (wave D)
+
+```go
+ids := newIDFunc() // unique message IDs
+r, err := agent.NewRunner(agent.Config{
+	Provider: provider, Model: session.Model, Effort: llm.EffortHigh,
+	Tools:      agent.DefaultTools(agent.ToolOptions{NewID: ids}),
+	MaxSteps:   100,         // model calls per Run
+	TokenBudget: budget,     // per session, over State.Aux.Usage
+	Inputs:     pollQueuedMessages, // new user messages / answers
+	ShouldStop: cancelRequested,    // sessions.cancel_requested_at
+	Delivered:  emitRunningAfterAnswer,
+	Checkpoint: saveAgentState,
+	NewID:      ids,
+})
+run := &agent.Run{
+	SessionID: id, Sandbox: sb, Emit: redactingEmit, Host: githubHost,
+	Repos: repos, // RepoContext with Profile from repo_profiles
+	GitAuthor: botIdentity,
+	AfterFileChange: saveDiff, // runs before file.changed
+	OnPROpened: recordPR,      // runs before pr.opened; once per repo
+}
+run.Shells = tmuxshell.New(sb, tmuxshell.WithOutput(func(shell string, chunk []byte) {
+	emit(events.TypeToolCallOutput, events.ToolCallOutputPayload{
+		CallID: run.CurrentCall(shell), ShellID: shell, Chunk: redact(chunk)})
+}))
+out := r.Run(ctx, run, st)
+```
+
+A new session starts from `agent.NewState(agent.BuildSystemPrompt(...))`. The system prompt is built once and never rebuilt, because Opus 5.5 binds thinking blocks to the exact prefix.
+
+### State and `agent_state`
+
+`State.MarshalColumns` returns `llm_messages` (the append-only `[]llm.Message`) and `raw_messages`, which holds `{"system": ..., "aux": ...}`. `Aux` contains:
+
+- the raw provider responses
+- the edit history behind `undo_edit`
+- the repeat-detection counters
+- the pending user turn, with any tool results held back by a pause
+- the PRs already opened
+- cumulative usage
+- the IDs of delivered inputs
+
+Load the state with `agent.UnmarshalState(llm_messages, raw_messages)`.
+
+### Outcomes
+
+The state is consistent after every outcome; save it, then:
+
+| `Outcome.Kind` | Meaning | Suggested status |
+|---|---|---|
+| `end_turn` | The model finished and no input is waiting. `Text` is its final message. | `completed`, or `no_changes` if no PR was opened |
+| `paused` | `Question` is open. Set `open_question_id = Question.ID`. | `waiting_for_user` |
+| `cancelled` | `ShouldStop` reported true. | `cancelled` |
+| `step_cap` / `budget_exceeded` | A limit was hit. | `failed` with that reason, or wait for the user |
+| `failed` | `Reason` is `context_exhausted`, `llm_error`, `refusal`, `tool_error`, `interrupted`, `inputs_failed`, `checkpoint_failed` or `emit_failed`. `Err` holds the cause. | `failed` |
+
+To resume after a pause, deliver the answer through `Inputs` with `QuestionID` set. It becomes the `ask_user` call's `tool_result`, sent with the held sibling results in one user message. A plain message answers too. Clear `open_question_id` whenever `Run` returns anything other than `paused`.
+
+### Events
+
+The agent emits:
+
+- `message.user` (when an input is handed to the model)
+- `message.delta` and `message.assistant` (under one message ID)
+- `tool_call.started` and `tool_call.finished`
+- `shell.created`
+- `file.changed` (after `AfterFileChange`)
+- `question.asked` (after the whole tool batch, so the worker's `session.status waiting_for_user` follows it directly)
+- `pr.opened` (after `OnPROpened`)
+
+The worker emits `session.status`, `tool_call.output` and `error`. A publish failure after a store (`events.ErrPublish`) is ignored. Any other `Emit` error stops the run with `emit_failed`.
+
+### Known limitations
+
+- There is no compaction yet. A conversation that outgrows the window fails with `context_exhausted`. The append-only design is ready for the provider's server-side compaction.
+- Path checks are lexical. A symlink inside `/workspace` that points outside it is followed by the sandbox, and the sandbox remains the trust boundary.
+- `ShouldStop` is polled between steps and between tool calls. A long `shell_exec` ends early only when the worker also calls `Shells.Interrupt`.
