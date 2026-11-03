@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/Pranay0083/keith/internal/llm"
 	"github.com/Pranay0083/keith/internal/llm/llmtest"
 	"github.com/Pranay0083/keith/internal/sandbox"
+	"github.com/Pranay0083/keith/internal/sandbox/memsandbox"
 	"github.com/Pranay0083/keith/internal/store"
 )
 
@@ -99,5 +101,62 @@ func TestStopDuringSetupStartsNoFurtherInstall(t *testing.T) {
 	}
 	if n := len(e.events(s.ID, events.TypeToolCallStarted)); n != 1 {
 		t.Errorf("setup tool calls = %d, want 1", n)
+	}
+}
+
+// Re-provisioning a reaped sandbox checks out the agent's pushed branch
+// and runs the install on it (agent-written lockfiles and scripts). That
+// sandbox must never become the repo's shared snapshot, and neither may
+// any re-provision: only a session's first provision, from the default
+// branch, is snapshotted.
+func TestReprovisionNeverReplacesTheSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name, start string
+	}{
+		{"agent branch", "origin/agent/"},
+		{"default branch", "origin/main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.opts.IdleTimeout = time.Minute
+			e.profile(store.RepoProfile{RepoID: testRepo, InstallCmd: "npm ci"})
+			s := e.newSession()
+			e.llm.Push(llmtest.Text("one"))
+			if err := e.run(s.ID); err != nil {
+				t.Fatal(err)
+			}
+			prof, _ := e.st.GetRepoProfile(context.Background(), testRepo)
+			snap1 := prof.Snapshot
+			if snap1.ID == "" {
+				t.Fatal("the first provision was not snapshotted")
+			}
+			// The sandbox is reaped while idle; the agent may have pushed
+			// agent/<id> with a changed lockfile.
+			e.st.Backdate(s.ID, 2*time.Minute)
+			if n, err := e.worker().Reap(context.Background()); err != nil || n != 1 {
+				t.Fatalf("reap %d %v", n, err)
+			}
+			start := tc.start
+			if strings.HasSuffix(start, "/") {
+				start += s.ID
+			}
+			e.cloneOut = "default=main\nstart=" + start + "\n"
+			e.lockOut = "100644 0badc0de 0\tpackage-lock.json\n"
+			if _, err := e.st.AddInput(s.ID, store.InputMessage, "one more thing", "", testUser); err != nil {
+				t.Fatal(err)
+			}
+			e.llm.Push(llmtest.Text("two"))
+			if err := e.resume(s.ID); err != nil {
+				t.Fatal(err)
+			}
+			sb := e.sandbox(s.ID)
+			if len(e.execs(sb, "git clone")) != 1 {
+				t.Fatal("not re-provisioned")
+			}
+			prof, _ = e.st.GetRepoProfile(context.Background(), testRepo)
+			if callsHave(sb, memsandbox.OpSnapshot) || prof.Snapshot.ID != snap1.ID {
+				t.Errorf("the re-provisioned sandbox replaced the repo's snapshot (%s -> %s)", snap1.ID, prof.Snapshot.ID)
+			}
+		})
 	}
 }

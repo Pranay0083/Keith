@@ -97,10 +97,32 @@ func (s *session) setup(ctx context.Context, snap store.Snapshot) error {
 	if s.stop.Load() {
 		return nil
 	}
-	if !s.w.o.NoSnapshot && len(s.repos) == 1 && ran && allOK && hash != "" && hash != snap.LockHash {
+	if !s.w.o.NoSnapshot && len(s.repos) == 1 && ran && allOK && hash != "" && hash != snap.LockHash &&
+		s.pristine(ctx, s.repos[0]) {
 		s.snapshot(ctx, s.repos[0], hash)
 	}
 	return nil
+}
+
+// pristine reports whether r's sandbox may become the repo's shared
+// snapshot: the session's first provision (the agent has never run, so
+// nothing in the sandbox is its work), with the session branch checked
+// out from origin/<default>. Re-provisioning a session checks out the
+// agent's pushed branch, whose lockfiles and install scripts the agent
+// wrote; snapshotting that would hand them to every later session.
+func (s *session) pristine(ctx context.Context, r *repoState) bool {
+	if !r.fromDefault {
+		return false
+	}
+	_, err := s.w.d.Store.LoadAgentState(ctx, s.id)
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		s.log.Warn("snapshot: check for agent state; not snapshotting", "err", err)
+		return false
+	}
+	return true
 }
 
 func exitPhrase(res sandbox.ShellResult) string {

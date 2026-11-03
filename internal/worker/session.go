@@ -106,6 +106,9 @@ type repoState struct {
 	Name    string // directory name under /workspace
 	Path    string
 	Profile store.RepoProfile
+	// fromDefault is set when this task's clone checked the session
+	// branch out from origin/<default> (the agent had pushed nothing).
+	fromDefault bool
 }
 
 func (r *repoState) context() agent.RepoContext {

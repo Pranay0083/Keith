@@ -526,13 +526,18 @@ echo "start=$start"`, shellQuote(url), shellQuote(r.Path), shellQuote(r.Branch),
 	if err != nil {
 		return err
 	}
+	start := ""
 	for _, line := range strings.Split(out, "\n") {
 		if v, ok := strings.CutPrefix(line, "default="); ok && r.DefaultBranch == "" {
 			r.DefaultBranch = strings.TrimSpace(v)
 		}
-		if v, ok := strings.CutPrefix(line, "start="); ok && strings.TrimSpace(v) == "origin/"+r.Branch {
-			s.log.Info("continuing from the pushed session branch", "repo", r.FullName)
+		if v, ok := strings.CutPrefix(line, "start="); ok {
+			start = strings.TrimSpace(v)
 		}
+	}
+	r.fromDefault = r.DefaultBranch != "" && start == "origin/"+r.DefaultBranch
+	if start == "origin/"+r.Branch {
+		s.log.Info("continuing from the pushed session branch", "repo", r.FullName)
 	}
 	return s.w.d.Store.SetSessionRepoBranch(ctx, s.id, r.RepoID, r.Branch)
 }

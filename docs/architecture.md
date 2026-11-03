@@ -119,7 +119,7 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
 3. **Set up** (status `setting_up`).
    - Each repo profile's install command runs in a tmux shell, streamed to the UI as a synthetic tool call. A failing install does not fail the session: the agent is told, and can fix it.
    - A Stop during setup interrupts the running install, starts no further install, and cancels the session before the agent starts.
-   - After the first successful setup of a single-repo session that has no current snapshot, the worker snapshots the sandbox. Before the snapshot it removes the token file and shell logs, and the docker provider blanks the env vars, so neither the token nor the secrets are baked in. It then records the snapshot with a hash of the repo's lockfiles.
+   - After the first successful setup of a single-repo session that has no current snapshot, the worker snapshots the sandbox. Only a session's first provision, checked out from `origin/<default>`, is snapshotted: a re-provision checks out the agent's pushed branch (agent-written lockfiles and install scripts), which must never reach other sessions through the shared snapshot. Before the snapshot it removes the token file and shell logs, and the docker provider blanks the env vars, so neither the token nor the secrets are baked in. It then records the snapshot with a hash of the repo's lockfiles.
    - Later sessions on that repo start from the snapshot. They fetch and check out, and re-run the install only when the lockfile hash has changed.
 4. **Run the loop** (status `running`).
    - The worker emits the session's first `message.user` (the prompt) itself, then builds a new `agent.State` or loads the saved one.
