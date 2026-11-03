@@ -127,6 +127,45 @@ describe("mock demo session", () => {
   });
 });
 
+describe("mock resume checks", () => {
+  /** Settles a mock call, advancing past its latency. */
+  async function settle(p: Promise<unknown>): Promise<unknown> {
+    const out = p.catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    return out;
+  }
+
+  it("refuses a follow-up to a session whose repo the org lost", async () => {
+    const api = await load();
+    expect(await settle(api.getSession("s_legacy"))).toMatchObject({ status: "completed" });
+    expect(await settle(api.sendMessage("s_legacy", "One more thing"))).toMatchObject({
+      status: 409,
+      code: "repo_access_lost",
+    });
+    // Its repo is the only difference: the same follow-up elsewhere goes through.
+    expect(await settle(api.sendMessage("s_eslint", "One more thing"))).toHaveProperty("message_id");
+  });
+
+  it("caps active sessions on create, follow-up and answer", async () => {
+    const mod = await import("./index");
+    const api = mod.mockApi;
+    mod.setActiveCap(1); // the queued demo is already active
+    const limited = { status: 429, code: "rate_limited" };
+    expect(await settle(api.createSession("org_acme", { prompt: "x", repo_ids: ["r_web"] }))).toMatchObject(limited);
+    expect(await settle(api.sendMessage("s_eslint", "again"))).toMatchObject(limited);
+
+    const w = watch(api, "s_ratelimit");
+    await vi.advanceTimersByTimeAsync(500);
+    const q = openQuestion(w.state);
+    expect(q).not.toBeNull();
+    expect(await settle(api.answer("s_ratelimit", q!.id, "yes"))).toMatchObject(limited);
+    expect(openQuestion(w.state)?.id).toBe(q!.id); // still open
+
+    mod.setActiveCap(5);
+    expect(await settle(api.createSession("org_acme", { prompt: "x", repo_ids: ["r_web"] }))).toHaveProperty("id");
+  });
+});
+
 describe("fileDiff", () => {
   it("writes diffs react-diff-view can parse", () => {
     const before = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";

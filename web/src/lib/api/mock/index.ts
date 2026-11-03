@@ -4,6 +4,10 @@
 //
 // Try /sessions/demo. In the console, window.__keithMock.drop() cuts every
 // event socket (to watch the reconnect), and ?mockSpeed=4 plays faster.
+// window.__keithMock.cap(1) lowers the active-session cap to try 429
+// rate_limited (the queued demo already counts as one). The finished
+// session on acme/legacy-billing, a repo Keith lost access to, answers a
+// follow-up with 409 repo_access_lost.
 
 import { ApiError, type Api } from "../api";
 import { isTerminal } from "../events";
@@ -29,6 +33,13 @@ const secrets = structuredClone(fx.secrets);
 const profiles = new Map<string, RepoProfile>();
 const orgOf = new Map<string, string>(); // session id -> org id
 let idSeq = 0;
+/** MAX_ACTIVE_SESSIONS_PER_ORG, at the server's default. */
+let activeCap = 5;
+
+/** Sets the mock's active-session cap (window.__keithMock.cap(n)). */
+export function setActiveCap(n: number) {
+  activeCap = Number.isInteger(n) && n >= 1 ? n : 5;
+}
 
 for (const list of Object.values(repos)) {
   for (const r of list) {
@@ -98,6 +109,7 @@ if (typeof window !== "undefined") {
   (window as unknown as { __keithMock: unknown }).__keithMock = {
     server,
     drop: () => server.dropAll(),
+    cap: setActiveCap,
     speed: (n: number) => {
       server.speed = n > 0 ? n : 1;
     },
@@ -134,6 +146,32 @@ function session(id: string): MockSessionRecord {
   const rec = server.sessions.get(id);
   if (!rec) throw new ApiError(404, "not_found", "No such session.");
   return rec;
+}
+
+/** 429 rate_limited when one more active session would pass the org's cap. */
+function checkCap(orgId: string) {
+  let n = 0;
+  for (const rec of server.sessions.values()) {
+    const st = rec.session.status;
+    if (orgOf.get(rec.session.id) === orgId && !isTerminal(st) && st !== "waiting_for_user") n++;
+  }
+  if (n >= activeCap) {
+    throw new ApiError(429, "rate_limited", `This organization already has ${n} active sessions. Wait for one to finish.`);
+  }
+}
+
+/** 409 repo_access_lost when the session's org can no longer use one of its repos. */
+function checkReposUsable(rec: MockSessionRecord) {
+  for (const r of rec.session.repos) {
+    const found = findRepo(r.repo_id);
+    if (!found?.repo.accessible || found.orgId !== orgOf.get(rec.session.id)) {
+      throw new ApiError(
+        409,
+        "repo_access_lost",
+        `${r.full_name} is no longer available to this organization, so this session cannot continue. Start a new session.`,
+      );
+    }
+  }
 }
 
 const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -240,6 +278,7 @@ export const mockApi: Api = {
       throw new ApiError(422, "provider_unavailable", `The ${input.provider} provider isn't configured on this server.`);
     }
     if (Object.keys(fields).length) throw invalid(fields);
+    checkCap(orgId);
 
     const id = `s_${Date.now().toString(36)}${(++idSeq).toString(36)}`;
     const s = newSession(id, orgId, ids, prompt, issueUrl, new Date().toISOString());
@@ -274,6 +313,11 @@ export const mockApi: Api = {
     if (rec.session.status === "waiting_for_user") {
       throw new ApiError(409, "answer_required", "The agent is waiting for an answer to its question.");
     }
+    if (isTerminal(rec.session.status)) {
+      // This message resumes the session.
+      checkReposUsable(rec);
+      checkCap(orgOf.get(id) ?? "");
+    }
     const mid = messageId();
     rec.turns += 1;
     if (isTerminal(rec.session.status)) {
@@ -298,6 +342,8 @@ export const mockApi: Api = {
     if (rec.waitingFor !== questionId) {
       throw new ApiError(409, "question_mismatch", "That question is no longer open.");
     }
+    checkReposUsable(rec);
+    checkCap(orgOf.get(id) ?? ""); // waiting_for_user isn't active; the answer makes it so
     const mid = messageId();
     server.answer(rec, mid, fx.USER_ID, questionId, t);
     await latency();

@@ -96,4 +96,6 @@ export const pastSessions: Array<{
   { id: "s_eslint", repoIds: ["r_api"], prompt: "Bump eslint to v9 and move to the flat config", issueUrl: null, script: "eslint", age: 26 * H },
   { id: "s_readme", repoIds: ["r_docs"], prompt: "Rewrite the README intro in a friendlier tone", issueUrl: null, script: "cancelled", age: 2 * D },
   { id: "s_billing", repoIds: ["r_ui"], prompt: "Upgrade the payments SDK to v5 in shared-ui", issueUrl: null, script: "fail", age: 3 * D },
+  // On a repo Keith has since lost: a follow-up gets 409 repo_access_lost.
+  { id: "s_legacy", repoIds: ["r_billing"], prompt: "Bump eslint to v9 in legacy-billing", issueUrl: null, script: "eslint", age: 6 * D },
 ];
