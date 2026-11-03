@@ -207,3 +207,28 @@ func TestNewRunnerValidates(t *testing.T) {
 		}
 	}
 }
+
+// TestStateHasNoNUL checks that a failing call (which repeat detection
+// records) and output with NUL bytes leave a state Postgres jsonb can
+// store: no \u0000 anywhere.
+func TestStateHasNoNUL(t *testing.T) {
+	nul := fakeTool{name: "nul", fn: func(context.Context, *agent.Run, json.RawMessage) (agent.Result, error) {
+		return agent.Result{IsError: true, Content: []llm.Block{llm.TextBlock("bin\x00ary")}, Summary: "failed"}, nil
+	}}
+	h := newHarness(t, nul)
+	h.queue.Push(agent.Input{ID: "p", Text: "go\x00"})
+	h.prov.Push(llmtest.ToolCall("n1", "nul", map[string]string{}), llmtest.Text("done"))
+	wantKind(t, h.runOnce(), agent.OutcomeEndTurn)
+	msgs, aux, err := h.st.MarshalColumns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range [][]byte{msgs, aux} {
+		if strings.Contains(string(col), `\u0000`) {
+			t.Fatalf("state holds \\u0000: %s", col)
+		}
+	}
+	if !strings.Contains(string(msgs), "bin�ary") {
+		t.Errorf("tool output not kept: %s", msgs)
+	}
+}

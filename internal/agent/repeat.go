@@ -81,7 +81,9 @@ type verdict struct {
 // observe records one tool call's outcome in rs and decides whether to
 // nudge or pause.
 func (p RepeatPolicy) observe(rs *RepeatState, tool string, input json.RawMessage, res Result, repos []RepoContext) verdict {
-	key := tool + "\x00" + canonicalJSON(input)
+	// ':' cannot occur in a tool name. (Not NUL: the key is a JSON object
+	// key in agent_state, and Postgres jsonb rejects \u0000.)
+	key := tool + ":" + canonicalJSON(input)
 	output := resultText(res)
 
 	same := 0

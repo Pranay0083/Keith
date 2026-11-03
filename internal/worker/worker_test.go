@@ -966,3 +966,43 @@ func TestTimeLimit(t *testing.T) {
 		t.Errorf("session = %s %s", x.Status, x.StatusReason)
 	}
 }
+
+func TestScrubNUL(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"a":"x"}`:            `{"a":"x"}`,
+		`{"a":"x\u0000y"}`:     `{"a":"x\ufffdy"}`,
+		`{"a":"x\\u0000y"}`:    `{"a":"x\\u0000y"}`,
+		`{"a":"\\\u0000"}`:     `{"a":"\\\ufffd"}`,
+		`["\u0000","\u00001"]`: `["\ufffd","\ufffd1"]`,
+		`{"\u0000k":"é\\"}`:    `{"\ufffdk":"é\\"}`,
+	} {
+		if got := string(scrubNUL([]byte(in))); got != want {
+			t.Errorf("scrubNUL(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+func TestNULOutputIsStorable(t *testing.T) {
+	e := newEnv(t)
+	s := e.newSession()
+	e.onExec = func(name, cmd string, _ time.Duration) (sandbox.ShellResult, error) {
+		e.lastShells().onOutput(name, []byte("bin\x00ary\n"))
+		return sandbox.ShellResult{OutputTail: "bin\x00ary", ExitCode: 1}, nil
+	}
+	e.llm.Push(
+		toolCall("c1", "shell_exec", map[string]any{"shell": "main", "command": "cat /bin/ls"}),
+		toolCall("c2", "shell_exec", map[string]any{"shell": "main", "command": "cat /bin/ls"}),
+		llmtest.Text("binary"),
+	)
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.st.Session(s.ID).Status; st != events.StatusNoChanges {
+		t.Fatalf("status = %s (%s)", st, e.st.Session(s.ID).StatusReason)
+	}
+	for _, ev := range e.evs.All(s.ID) {
+		if strings.Contains(string(ev.Payload), `\u0000`) {
+			t.Errorf("event %s holds \\u0000: %s", ev.Type, ev.Payload)
+		}
+	}
+}

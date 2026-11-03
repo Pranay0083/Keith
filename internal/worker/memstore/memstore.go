@@ -7,6 +7,7 @@
 package memstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -372,6 +373,10 @@ func (m *Store) SaveAgentState(_ context.Context, st store.AgentState) error {
 	x, ok := m.get(st.SessionID)
 	if !ok {
 		return notFound("save agent state")
+	}
+	// Postgres jsonb rejects \u0000 (SQLSTATE 22P05); so does this.
+	if bytes.Contains(st.LLMMessages, []byte(`\u0000`)) || bytes.Contains(st.RawMessages, []byte(`\u0000`)) {
+		return fmt.Errorf("memstore: save agent state: unsupported Unicode escape sequence \\u0000")
 	}
 	if st.Provider != x.s.Provider || (x.state != nil && x.state.Provider != st.Provider) {
 		return fmt.Errorf("memstore: save agent state: %w", store.ErrProviderMismatch)

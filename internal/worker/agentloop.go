@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -115,6 +116,12 @@ func (s *session) saveState(ctx context.Context) error {
 	msgs, aux, err := s.state.MarshalColumns()
 	if err != nil {
 		return err
+	}
+	if m, a := scrubNUL(msgs), scrubNUL(aux); len(m) != len(msgs) || len(a) != len(aux) || !bytes.Equal(m, msgs) || !bytes.Equal(a, aux) {
+		// The agent keeps NUL out of what it adds; this is a last resort
+		// so the state can still be saved.
+		s.log.Warn("agent state held NUL characters; saved with U+FFFD instead")
+		msgs, aux = m, a
 	}
 	return s.w.d.Store.SaveAgentState(ctx, store.AgentState{
 		SessionID: s.id, Provider: s.sess.Provider, LLMMessages: msgs, RawMessages: aux,

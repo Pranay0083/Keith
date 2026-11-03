@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Pranay0083/keith/internal/events"
@@ -467,7 +468,7 @@ func (r *Runner) deliver(ctx context.Context, run *Run, st *State, inputs []Inpu
 	}
 	delivered := make([]Input, 0, len(fresh))
 	for i, in := range fresh {
-		text := in.Text
+		text := storableText(in.Text)
 		if text == "" {
 			text = "(empty message)"
 		}
@@ -658,6 +659,7 @@ func (r *Runner) callTool(ctx context.Context, run *Run, st *State, u llm.Block)
 	if len(res.Content) == 0 {
 		res.Content = []llm.Block{llm.TextBlock("(no output)")}
 	}
+	res.Content = storableBlocks(res.Content)
 	finished.IsError = res.IsError
 	finished.ExitCode = res.ExitCode
 	finished.TimedOut = res.TimedOut
@@ -701,6 +703,26 @@ func withCallID(ctx context.Context, id string) context.Context {
 func CallID(ctx context.Context) string {
 	id, _ := ctx.Value(callIDKey{}).(string)
 	return id
+}
+
+// storableText replaces NUL bytes, which Postgres text and jsonb cannot
+// hold, so the conversation can always be saved (a binary file read or a
+// program printing \0 would otherwise make every checkpoint fail). It is
+// applied before content enters the conversation, so what is saved is
+// exactly what the model saw.
+func storableText(s string) string {
+	if strings.IndexByte(s, 0) < 0 {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "\uFFFD")
+}
+
+// storableBlocks applies storableText to the text of blocks.
+func storableBlocks(bs []llm.Block) []llm.Block {
+	for i := range bs {
+		bs[i].Text = storableText(bs[i].Text)
+	}
+	return bs
 }
 
 // errEmitFailed wraps a failed Run.Emit.

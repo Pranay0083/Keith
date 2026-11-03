@@ -1,7 +1,9 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -123,8 +125,34 @@ func (e *emitter) appendLocked(ctx context.Context, typ string, payload any) err
 	if err != nil {
 		return fmt.Errorf("worker: redact %s payload: %w", typ, err)
 	}
-	_, err = e.em.Emit(ctx, e.sessionID, typ, raw)
+	_, err = e.em.Emit(ctx, e.sessionID, typ, json.RawMessage(scrubNUL(raw)))
 	return err
+}
+
+// scrubNUL replaces \u0000 escapes in JSON with \ufffd: Postgres jsonb
+// cannot hold NUL, and a payload or state carrying one would fail to
+// store. It walks escapes in order, so an escaped backslash followed by
+// "u0000" is left alone.
+func scrubNUL(b []byte) []byte {
+	if !bytes.Contains(b, []byte(`\u0000`)) {
+		return b
+	}
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if c != '\\' || i+1 >= len(b) {
+			out = append(out, c)
+			continue
+		}
+		if b[i+1] == 'u' && i+5 < len(b) && string(b[i+2:i+6]) == "0000" {
+			out = append(out, `\ufffd`...)
+			i += 5
+			continue
+		}
+		out = append(out, c, b[i+1])
+		i++
+	}
+	return out
 }
 
 // shellOutput emits a chunk of a shell's terminal output as
