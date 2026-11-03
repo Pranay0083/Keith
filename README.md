@@ -1,79 +1,39 @@
-# 👑 Keith - The Autonomous Developer Companion
+# Keith
 
-**Keith** is a hyper-agentic, 24/7 terminal-native AI engineer. Built completely from the ground up to orchestrate complex RAG (Retrieval-Augmented Generation), control native macOS hardware, and write code entirely autonomously alongside you.
+Keith is a multi-tenant cloud coding agent. You connect GitHub, pick one or more repos, and describe a task or paste an issue link. An agent does the work in its own cloud sandbox, runs the tests and opens a pull request. You can watch every step live: chat, tool calls, terminal output and the diff.
 
-Keith lives natively in your CLI, detaches into an immortal background OS daemon, and interacts through a stunning, real-time React Web Deck. He learns your API keys, your aesthetic preferences, and your codebase autonomously.
+## Architecture
 
----
+- **Control plane in Go.** One `keith` binary runs the `api` service (HTTP + WebSocket, GitHub App, sessions) and the `worker` service (the agent loop).
+- **Agent loop outside the sandbox.** The worker calls the LLM and runs each tool call against the sandbox, so LLM keys, the GitHub App key and agent code never enter it.
+- **One sandbox per session** (Daytona in the cloud, Docker locally), with repos at `/workspace/<repo>` and named tmux shells.
+- **Provider-agnostic LLM layer.** Claude (`claude-opus-5-5`) first, Gemini second; each session stays on one provider.
+- **Event log as source of truth.** Every step is an event in Postgres, fanned out over Redis and replayed to the web app (Next.js + xterm.js) on reconnect.
+- **GitHub App** with short-lived, repo-scoped installation tokens per session.
 
-## ⚡ Core Dependencies
+See [docs/architecture.md](docs/architecture.md) for the package map, the trust boundary and the event rules.
 
-To run Keith from source or build the binary, you need the following host dependencies:
+## Status
 
-1. **[Go](https://go.dev/doc/install)** (1.21+ recommended) - *Core CLI, Daemon Router, Gateway, and Agent Loop.*
-2. **[Python 3](https://www.python.org/downloads/)** (`python3` + `pip3`) - *Zero-latency local Semantic Vector Engine.*
-3. **macOS** (Apple Silicon or Intel) - *Required for native `launchctl` daemon persistence and hardware controls.*
-4. **Gemini API Key** - *The primary cognitive LLM backend.*
+Phase 23: cloud pivot in progress; V1 being built. The macOS assistant this repo used to be has been removed (it is in git history). The service commands are stubs for now.
 
-*(Note: Keith autonomously downloads huggingface models and generates his own virtual environments on boot. No further Python setup is required).*
+## Development
 
----
-
-## 🚀 Quickstart & Setup
-
-### 1. Build and Install Globally
-Pull the repository and compile the native Unix binary into your `~/.local/bin`. Ensure `~/.local/bin` is in your `$PATH`.
+Prerequisites:
+- Go 1.26.10 or newer (required by the Daytona SDK)
+- Docker (local sandboxes, Postgres and Redis for integration tests)
 
 ```bash
-git clone git@github.com:pranay0083/keith.git
-cd keith
-go build -o keith ./cmd/keith
-cp keith ~/.local/bin/keith
+go build ./...
+go vet ./...
+go test ./...
+
+# Migration test against a Postgres you can create databases on
+KEITH_IT=1 DATABASE_URL=postgres://keith:keith@localhost:5432/keith?sslmode=disable go test ./migrations
 ```
 
-### 2. Login & Authenticate
-Securely bind your Gemini API Key into Keith's global config (`~/.config/keith/config.yaml`).
-```bash
-keith login
-```
-
-### 3. Initialize the RAG Identity Matrix
-Scaffold Keith's initial identity blocks (`VISION.md`, `SOUL.md`, `MEMORY.md`, `USER.md`).
-```bash
-keith init
-```
-
-### 4. Spawn the Immortal Daemon
-Start Keith. He will ask to install a true macOS `launchd` daemon so he survives reboots, sleep states, and panics perfectly.
-```bash
-keith start
-```
-
-### 5. Open the Web Interface
-Once Keith is humming in the background, pop open the command deck in your native browser instantly.
-```bash
-keith web
-```
-*(You can also securely drop in a Telegram Bot Token via the Web UI chat to talk to Keith from your phone).*
-
----
-
-## 🛑 Operations
-
-To physically terminate the background Daemon process (useful for updates or heavy resets), run:
-```bash
-keith stop
-```
-
----
-
-## 🧠 Architecture Overview
-
-- **`cmd/keith`**: The Cobra CLI router that maps User inputs into Go sub-functions.
-- **`internal/agent`**: The terrifyingly potent Cognitive LLM Loop that continuously feeds Context, Tools, and Terminal output to Gemini to physically execute coding objectives.
-- **`internal/memory`**: The Supermemory pipeline utilizing SQLite Full-Text Search and a purely local `sentence-transformers` Python REST API on a dynamic `40000+` port matrix.
-- **`internal/system`**: Low-level macOS hardware bindings for Keyboard Brightness (`osascript`), System Volume, Wi-Fi, and Voice Synthesis (`say`).
-- **`web/`**: The dynamic, glassmorphism-powered React Frontend UI bridging Server-Sent Events to raw LLM pipelines.
+Configuration comes from environment variables; see `internal/config`.
 
 ## License
+
 MIT
