@@ -42,6 +42,7 @@ const (
 	verifyToolName           = "run_tests"
 	maxFeedbackOutput        = 6000
 	stateSaveTimeout         = 30 * time.Second
+	finishEmitTimeout        = 5 * time.Second
 	parkTimeout              = 2 * time.Minute
 	defaultCommandStepTimout = 10 * time.Minute
 )

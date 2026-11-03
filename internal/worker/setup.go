@@ -197,6 +197,8 @@ func (s *session) syntheticCommand(ctx context.Context, tool, shell string, r *r
 		CallID: callID, Tool: tool, DurationMS: s.w.d.Now().Sub(start).Milliseconds(),
 	}
 	switch {
+	case err != nil && ctx.Err() != nil:
+		finished.IsError, finished.Summary = true, "interrupted"
 	case err != nil:
 		finished.IsError, finished.Summary = true, "internal error"
 	default:
@@ -204,7 +206,15 @@ func (s *session) syntheticCommand(ctx context.Context, tool, shell string, r *r
 		finished.IsError = res.ExitCode != 0
 		finished.Summary = fmt.Sprintf("%s: %s", r.FullName, summaryFor(res))
 	}
-	if eerr := s.em.Emit(ctx, events.TypeToolCallFinished, finished); eerr != nil && err == nil &&
+	// On shutdown the call still finishes in the timeline: emit on a
+	// short context detached from the cancellation.
+	ectx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ectx, cancel = context.WithTimeout(context.WithoutCancel(ctx), finishEmitTimeout)
+		defer cancel()
+	}
+	if eerr := s.em.Emit(ectx, events.TypeToolCallFinished, finished); eerr != nil && err == nil &&
 		!errors.Is(eerr, events.ErrPublish) {
 		err = eerr
 	}
