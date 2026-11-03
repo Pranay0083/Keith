@@ -29,8 +29,21 @@
 //     to do (the input was already consumed by a running worker), return
 //     nil.
 //
-// run_session follows the same lease rule. Payload errors wrap
-// asynq.SkipRetry, so a malformed task is archived, not retried.
+// run_session follows the same lease rule. It must also drain pending
+// inputs after the initial prompt: messages sent while the session was
+// queued are stored, and no resume_session is enqueued for them.
+//
+// The API stores input and sets the cancel flag under the session's row
+// lock (store.GetSessionForUpdate), and enqueues resume_session only
+// when the status it saw was terminal or waiting_for_user (cancel: queued
+// too). So after the worker writes a terminal status or
+// waiting_for_user, and before it releases the lease, it must re-check
+// ListPendingInputs and IsCancelRequested and carry on if either has
+// something: input that arrived while it was finishing has no other
+// wakeup.
+//
+// Payload errors wrap asynq.SkipRetry, so a malformed task is archived,
+// not retried.
 package queue
 
 import (

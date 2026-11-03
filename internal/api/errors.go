@@ -191,8 +191,6 @@ func jsonKind(k string) string {
 		return "a boolean"
 	case "struct", "map":
 		return "an object"
-	case "ptr":
-		return "a string"
 	}
 	if strings.HasPrefix(k, "int") || strings.HasPrefix(k, "uint") || strings.HasPrefix(k, "float") {
 		return "a number"

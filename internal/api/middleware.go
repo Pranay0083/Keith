@@ -73,7 +73,10 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 		status := sw.status
 		if !sw.wrote {
-			status = http.StatusOK // hijacked or empty
+			status = http.StatusOK
+			if r.Header.Get("Upgrade") != "" {
+				status = http.StatusSwitchingProtocols // hijacked by the upgrade
+			}
 		}
 		s.log(r).Info("http request", "method", r.Method, "path", r.URL.Path, "status", status,
 			"duration_ms", s.now().Sub(start).Milliseconds())

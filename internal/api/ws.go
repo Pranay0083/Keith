@@ -28,10 +28,11 @@ const (
 
 // WebSocket close codes (docs/api.md).
 const (
-	closeNormal       = websocket.CloseNormalClosure     // 1000
-	closeGoingAway    = websocket.CloseGoingAway         // 1001
-	closeServerError  = websocket.CloseInternalServerErr // 1011
-	closeResync       = 4000
+	closeGoingAway   = websocket.CloseGoingAway         // 1001
+	closeServerError = websocket.CloseInternalServerErr // 1011
+	// 4000 (resync) is never sent: Replay applies backpressure instead of
+	// dropping events, and a client too slow for the write deadline is
+	// disconnected and reconnects with after_seq.
 	closeUnauthorized = 4401
 	closeForbidden    = 4403
 	closeGone         = 4404
