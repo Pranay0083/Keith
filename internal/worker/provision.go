@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"slices"
 	"strconv"
@@ -25,6 +26,11 @@ const (
 	gitTokenDir   = "/run/keith"
 	cloneTimeout  = 15 * time.Minute
 	gitCmdTimeout = 2 * time.Minute
+
+	// provisionedPath marks a sandbox whose provisioning finished (the
+	// credential helper, every clone and setup). It holds the sandbox's
+	// ID, so a sandbox made from a snapshot of another never passes.
+	provisionedPath = gitTokenDir + "/provisioned"
 )
 
 // loadSecrets decrypts the org's and the session repos' secrets into the
@@ -127,16 +133,24 @@ func (s *session) ensureEnv(ctx context.Context) error {
 		s.tokenFile.offer(t.Value)
 	})
 
-	// Sandbox: resume the parked one, or provision.
+	// Sandbox: resume the parked one, or provision. A sandbox whose
+	// provisioning never finished (a crash, a lost lease or a failed
+	// clone) is replaced: it may lack the helper, a clone or setup.
 	resumed := false
 	if s.sess.SandboxID != "" && s.sess.SandboxProvider == s.w.d.Sandboxes.Name() {
 		sb, err := s.w.d.Sandboxes.Get(ctx, s.sess.SandboxID)
 		if err == nil {
 			err = sb.Resume(ctx)
 		}
+		ready := false
+		if err == nil {
+			ready, err = isProvisioned(ctx, sb)
+		}
 		switch {
-		case err == nil:
+		case err == nil && ready:
 			s.sb, resumed = sb, true
+		case err == nil:
+			s.log.Warn("the session's sandbox was never fully provisioned; provisioning a new one", "sandbox_id", s.sess.SandboxID)
 		case errors.Is(err, sandbox.ErrNotFound):
 			s.log.Info("the session's sandbox is gone; provisioning a new one", "sandbox_id", s.sess.SandboxID)
 		default:
@@ -247,8 +261,28 @@ func (s *session) provision(ctx context.Context) error {
 	if err := s.setup(ctx, snap); err != nil {
 		return err
 	}
+	if !s.stop.Load() {
+		// Setup interrupted by a Stop is not finished: a later task
+		// provisions again.
+		if err := s.sb.WriteFile(ctx, provisionedPath, []byte(s.sb.ID()+"\n"), 0o600); err != nil {
+			return s.provisionErr(ctx, ReasonProvisionFailed, "Could not record the sandbox as provisioned", err)
+		}
+	}
 	s.envReady = true
 	return s.prepareRun(ctx)
+}
+
+// isProvisioned reports whether sb's provisioning finished: its marker
+// file holds its own ID.
+func isProvisioned(ctx context.Context, sb sandbox.Sandbox) (bool, error) {
+	b, err := sb.ReadFile(ctx, provisionedPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(b)) == sb.ID(), nil
 }
 
 func (s *session) provisionErr(ctx context.Context, reason, what string, err error) error {

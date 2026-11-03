@@ -153,6 +153,7 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
 A follow-up message, an answer or a Stop on a parked session enqueues `resume_session`.
 
 - **Sandbox still parked:** the worker resumes it, writes a fresh token, reattaches the tmux shells and continues from `agent_state`.
+- **Sandbox never fully provisioned** (a crash, a lost lease or a failed clone before provisioning finished): the worker deletes it and provisions a new one. Provisioning ends by writing `/run/keith/provisioned`, holding the sandbox's ID; a sandbox without it is not resumed. A Stop during setup also leaves it unwritten.
 - **Sandbox reaped:** the worker provisions a new one and clones again. It checks out `agent/<id>` if that branch exists on the remote, else starts fresh from the default branch. Uncommitted work from the reaped sandbox is lost; this is a known limitation.
 
 ### Reaper
