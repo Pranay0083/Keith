@@ -6,7 +6,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -16,8 +15,6 @@ import (
 // version is overridden at build time with
 // -ldflags "-X main.version=<version>".
 var version = "dev"
-
-var errNotImplemented = errors.New("not implemented yet")
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -36,17 +33,6 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAPICmd(), newWorkerCmd(), newVersionCmd())
 	root.AddCommand(newSandboxBenchCmd())
 	return root
-}
-
-func newWorkerCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "worker",
-		Short: "Run the agent worker that executes sessions",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("worker: %w", errNotImplemented)
-		},
-	}
 }
 
 func newVersionCmd() *cobra.Command {

@@ -30,3 +30,16 @@ func TestAPICommandRegistered(t *testing.T) {
 		t.Fatalf("api command: %v %v", cmd, err)
 	}
 }
+
+func TestRunWorkerValidatesConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	load := func() (*config.Config, error) { return config.LoadFrom(func(string) string { return "" }) }
+	err := runWorker(context.Background(), logger, load)
+	if err == nil || !strings.Contains(err.Error(), "missing") || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("err = %v", err)
+	}
+	cmd, _, err := newRootCmd().Find([]string{"worker"})
+	if err != nil || cmd.Use != "worker" {
+		t.Fatalf("worker command: %v %v", cmd, err)
+	}
+}
