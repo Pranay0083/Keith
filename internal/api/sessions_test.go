@@ -221,6 +221,56 @@ func TestCreateSessionCapIT(t *testing.T) {
 	}
 }
 
+// The per-org cap also holds for resumes: a follow-up to a finished
+// session, or an answer to a waiting one, makes the session active again.
+func TestResumeCapIT(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.cfg.MaxActiveSessionsPerOrg = 1
+	body := map[string]any{"prompt": "p", "repo_ids": []string{w.repo.ID}}
+	var done []store.Session
+	for range 3 {
+		x := w.create(t, body)
+		w.setStatus(t, x.ID, events.StatusCancelled) // e.g. stopped at once
+		done = append(done, x)
+	}
+	waiting := w.create(t, body)
+	if err := w.st.SetOpenQuestion(ctx, waiting.ID, "toolu_1"); err != nil {
+		t.Fatal(err)
+	}
+	w.setStatus(t, waiting.ID, events.StatusWaitingForUser)
+	active := w.create(t, body) // the org is now at its cap
+	wantError(t, w.do("POST", "/api/orgs/"+w.org.ID+"/sessions", body, w.as(w.member.ID)), 429, codeRateLimited)
+
+	for _, x := range done {
+		resp := w.do("POST", "/api/sessions/"+x.ID+"/messages", map[string]string{"text": "go"}, w.as(w.member.ID))
+		wantError(t, resp, http.StatusTooManyRequests, codeRateLimited)
+		if resp.Header().Get("Retry-After") != "30" {
+			t.Errorf("Retry-After %q", resp.Header().Get("Retry-After"))
+		}
+		if p, _ := w.st.ListPendingInputs(ctx, x.ID); len(p) != 0 {
+			t.Fatalf("refused message stored: %+v", p)
+		}
+	}
+	answer := map[string]string{"question_id": "toolu_1", "text": "yes"}
+	wantError(t, w.do("POST", "/api/sessions/"+waiting.ID+"/answers", answer, w.as(w.member.ID)), 429, codeRateLimited)
+	if got, _ := w.st.GetSession(ctx, waiting.ID); got.OpenQuestionID != "toolu_1" {
+		t.Fatalf("question closed by a refused answer: %q", got.OpenQuestionID)
+	}
+	if n := len(w.q.Resumes()); n != 0 {
+		t.Fatalf("%d resumes enqueued while the org is at its cap", n)
+	}
+	// Steering the active session is not a resume, so it is not capped.
+	decode[messageResponse](t, w.do("POST", "/api/sessions/"+active.ID+"/messages", map[string]string{"text": "also"}, w.as(w.member.ID)), 202)
+
+	// Once the active session finishes, a resume fits again.
+	w.setStatus(t, active.ID, events.StatusCompleted)
+	decode[messageResponse](t, w.do("POST", "/api/sessions/"+waiting.ID+"/answers", answer, w.as(w.member.ID)), 202)
+	if rs := w.q.Resumes(); len(rs) != 1 || rs[0].SessionID != waiting.ID {
+		t.Fatalf("resumes %+v", rs)
+	}
+}
+
 func TestCreateSessionEnqueueFailureIT(t *testing.T) {
 	w := newWorld(t)
 	w.q.SetErr(errors.New("redis down"))

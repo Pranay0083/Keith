@@ -40,7 +40,7 @@ Every non-2xx response from `/api/*` and `/auth/logout` has this body:
 | 415 | `unsupported_media_type` | Body without `Content-Type: application/json` |
 | 422 | `validation_failed` | A field failed validation; see `fields` |
 | 422 | `provider_unavailable` | `provider` is not configured on this server |
-| 429 | `rate_limited` | Too many requests; `Retry-After` header in seconds |
+| 429 | `rate_limited` | The org is at its active-session cap (`MAX_ACTIVE_SESSIONS_PER_ORG`): creating a session, or resuming one with `POST /messages` or `POST /answers`. `Retry-After` header in seconds |
 | 500 | `internal` | Anything else. The message never leaks internals |
 
 A resource in an org the user does not belong to returns `404` for session, repo and secret lookups by ID (so IDs cannot be probed), and `403 not_a_member` for `/api/orgs/{org_id}/…` routes.
@@ -282,6 +282,8 @@ Any member.
 | `provider` | Optional. `anthropic` or `gemini`; default is the org's `default_llm_provider`, then the server default. Unconfigured: `422 provider_unavailable`. |
 | `model` | Optional, at most 100 characters; default is the provider's default model. |
 
+Active sessions (`queued`, `provisioning`, `setting_up`, `running`) are capped per org at `MAX_ACTIVE_SESSIONS_PER_ORG`. At the cap: `429 rate_limited` with `Retry-After`.
+
 The API inserts `sessions` (`queued`) and `session_repos` (`branch = agent/<session_id>`), enqueues `run_session`, and returns `201`:
 
 ```json
@@ -323,6 +325,7 @@ Steer a running session, or send a follow-up to a finished one. Any member.
 
 - Running statuses (`queued` … `running`): the message is queued and the worker adds it to the next model turn. It is never dropped.
 - Terminal statuses: the message is queued and the API enqueues `resume_session`.
+  - A resumed session is active again, so it counts against the org's cap: at the cap, `429 rate_limited` and nothing is stored.
   - If the org can no longer use one of the session's repos, the API answers `409 repo_access_lost` and stores nothing. That happens when the repo was removed from the installation, the App was uninstalled, or the repo now belongs to another org's installation. Start a new session instead.
 - `waiting_for_user`: `409 answer_required`. Use `/answers`.
 
@@ -341,6 +344,7 @@ Answer the open `question.asked`. Any member.
 - Status not `waiting_for_user`: `409 not_waiting`.
 - `question_id` is not the open question (the latest `question.asked` with no answer): `409 question_mismatch`.
 - The org can no longer use one of the session's repos (as for `/messages`): `409 repo_access_lost`. The question stays open.
+- The org is at its active-session cap (a `waiting_for_user` session is not active; answering makes it active): `429 rate_limited`. The question stays open.
 
 Otherwise the API stores the answer, enqueues `resume_session` and returns `202 { "message_id": "m_01J…" }`. The resuming worker emits `message.user` with this `message_id` and the `question_id`, then `session.status` `running`.
 

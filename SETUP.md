@@ -173,7 +173,7 @@ Keep `SECRETS_KEY` stable and backed up. It encrypts the org and repo secrets st
 | `WEB_ORIGIN` | api | yes | (none) | The web app's origin, exactly `scheme://host[:port]` with no trailing slash. Used for CORS, the CSRF `Origin` check, the WebSocket origin check and redirects back to the web app. |
 | `SESSION_SECRET` | api | yes | (none) | Signs the `keith_session` cookie and the OAuth and setup state. At least 32 characters. |
 | `LISTEN_ADDR` | api | no | `:8080` | The api's listen address. |
-| `MAX_ACTIVE_SESSIONS_PER_ORG` | api | no | `5` | Caps an org's queued and running sessions. Beyond it, creating a session answers `429`. |
+| `MAX_ACTIVE_SESSIONS_PER_ORG` | api | no | `5` | Caps an org's queued and running sessions. Beyond it, creating a session, or resuming one with a follow-up message or an answer, answers `429`. |
 | `ANTHROPIC_API_KEY` | both | worker: yes if the default provider is `anthropic` | (none) | Claude API key. The worker calls the model with it. The api only checks that it is set: it accepts `anthropic` sessions and lists the provider only when it is. |
 | `GEMINI_API_KEY` | both | worker: yes if the default provider is `gemini` | (none) | Gemini API key. Same rules as `ANTHROPIC_API_KEY`. |
 | `DEFAULT_LLM_PROVIDER` | both | no | `anthropic` | `anthropic` or `gemini`. The provider for new sessions when neither the request nor the org picks one. |

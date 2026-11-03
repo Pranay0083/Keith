@@ -281,16 +281,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) err
 		if err := tx.LockOrg(ctx, orgID); err != nil {
 			return err
 		}
-		n, err := tx.CountActiveSessions(ctx, orgID)
-		if err != nil {
+		if err := s.checkCap(ctx, tx, orgID); err != nil {
 			return err
 		}
-		if n >= s.cfg.MaxActiveSessionsPerOrg {
-			return &apiError{
-				Status: http.StatusTooManyRequests, Code: codeRateLimited, RetryAfter: rateLimitRetryAfter,
-				Message: fmt.Sprintf("This organization already has %d active sessions. Wait for one to finish.", n),
-			}
-		}
+		var err error
 		sess, err = tx.CreateSession(ctx, store.CreateSessionParams{
 			OrgID: orgID, CreatedBy: currentUser(r).ID, Prompt: prompt,
 			Provider: provider, Model: model, RepoIDs: repoIDs, Trigger: trigger,
@@ -313,6 +307,31 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) err
 		return errInternal
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": sess.ID})
+	return nil
+}
+
+// checkCap answers 429 rate_limited when the org already has
+// MaxActiveSessionsPerOrg active sessions, for a request that would add
+// one: a new session, or a resume of a finished or waiting one. Call it
+// inside WithTx after tx.LockOrg, which makes the count exact against
+// other API requests.
+//
+// A resumed session keeps its finished or waiting status until a worker
+// picks it up, so resumes queued close together can each see room. The
+// worker must re-check the cap before it runs a resumed session.
+//
+// Lock order: the org row, then a session row (GetSessionForUpdate).
+func (s *Server) checkCap(ctx context.Context, tx *store.Store, orgID string) error {
+	n, err := tx.CountActiveSessions(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	if n >= s.cfg.MaxActiveSessionsPerOrg {
+		return &apiError{
+			Status: http.StatusTooManyRequests, Code: codeRateLimited, RetryAfter: rateLimitRetryAfter,
+			Message: fmt.Sprintf("This organization already has %d active sessions. Wait for one to finish.", n),
+		}
+	}
 	return nil
 }
 
@@ -422,8 +441,12 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) error
 	var in store.Input
 	var status events.SessionStatus
 	err = s.store.WithTx(ctx, func(tx *store.Store) error {
-		// The row lock orders this insert against the worker's status
-		// writes (see the worker contract in package queue).
+		// The org lock comes first (see checkCap). The session row lock
+		// orders this insert against the worker's status writes (see the
+		// worker contract in package queue).
+		if err := tx.LockOrg(ctx, x.OrgID); err != nil {
+			return err
+		}
 		cur, err := tx.GetSessionForUpdate(ctx, x.ID)
 		if err != nil {
 			return err
@@ -434,6 +457,9 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) error
 		}
 		if status.Terminal() { // this message resumes the session
 			if err := checkReposUsable(ctx, tx, x.ID); err != nil {
+				return err
+			}
+			if err := s.checkCap(ctx, tx, x.OrgID); err != nil {
 				return err
 			}
 		}
@@ -520,6 +546,9 @@ func (s *Server) handlePostAnswer(w http.ResponseWriter, r *http.Request) error 
 	}
 	var in store.Input
 	err = s.store.WithTx(ctx, func(tx *store.Store) error {
+		if err := tx.LockOrg(ctx, x.OrgID); err != nil { // before the session row (see checkCap)
+			return err
+		}
 		cur, err := tx.GetSessionForUpdate(ctx, x.ID)
 		if err != nil {
 			return err
@@ -531,6 +560,11 @@ func (s *Server) handlePostAnswer(w http.ResponseWriter, r *http.Request) error 
 			return errorf(http.StatusConflict, codeQuestionMismatch, "That question is not the open question.")
 		}
 		if err := checkReposUsable(ctx, tx, x.ID); err != nil {
+			return err
+		}
+		// waiting_for_user is not an active status: the answer makes the
+		// session active again.
+		if err := s.checkCap(ctx, tx, x.OrgID); err != nil {
 			return err
 		}
 		in, err = tx.CreateInput(ctx, store.CreateInputParams{
