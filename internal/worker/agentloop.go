@@ -200,6 +200,10 @@ func (s *session) delivered(ctx context.Context, ins []agent.Input) error {
 func (s *session) agentLoop(ctx context.Context) error {
 	if s.sess.Status != events.StatusRunning && !s.answering {
 		if err := s.setStatus(ctx, events.StatusRunning, ""); err != nil {
+			var fe *failure
+			if errors.As(err, &fe) {
+				return s.fail(ctx, fe.reason, fe.msg)
+			}
 			return s.interruptedOr(ctx, err)
 		}
 	}
@@ -220,6 +224,11 @@ func (s *session) agentLoop(ctx context.Context) error {
 		}
 		s.log.Info("agent run ended", "outcome", out.Kind, "reason", out.Reason, "steps", out.Steps,
 			"input_tokens", out.Usage.InputTokens, "output_tokens", out.Usage.OutputTokens)
+		if fe := (*failure)(nil); out.Kind == agent.OutcomeFailed && errors.As(out.Err, &fe) {
+			// A hook failed the session (an answer resumed over the org's
+			// session cap).
+			return s.fail(ctx, fe.reason, fe.msg)
+		}
 
 		switch out.Kind {
 		case agent.OutcomeEndTurn:

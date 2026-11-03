@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Pranay0083/keith/internal/events"
 	"github.com/Pranay0083/keith/internal/store"
 )
 
@@ -52,4 +53,33 @@ func (m *Store) SetRepos(id string, repos []store.SessionRepo) {
 	if x, ok := m.get(id); ok {
 		x.s.Repos = slices.Clone(repos)
 	}
+}
+
+// SetSessionStatusCapped implements worker.Store, with the store's cap
+// rule (see store.Store.SetSessionStatusCapped).
+func (m *Store) SetSessionStatusCapped(ctx context.Context, orgID, id string, status events.SessionStatus, reason string, max int) (bool, error) {
+	if !slices.Contains(store.ActiveStatuses, status) || max <= 0 {
+		return true, m.SetSessionStatus(ctx, id, status, reason)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	x, ok := m.get(id)
+	if !ok || x.s.OrgID != orgID {
+		return false, notFound("set session status capped")
+	}
+	if !slices.Contains(store.ActiveStatuses, x.s.Status) {
+		n := 0
+		for _, y := range m.sessions {
+			if y.s.OrgID == orgID && slices.Contains(store.ActiveStatuses, y.s.Status) {
+				n++
+			}
+		}
+		if n >= max {
+			return false, nil
+		}
+	}
+	x.s.Status, x.s.StatusReason, x.s.FinishedAt = status, reason, nil
+	x.statusLog = append(x.statusLog, status)
+	m.touch(x)
+	return true, nil
 }

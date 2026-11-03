@@ -146,6 +146,11 @@ type Options struct {
 	// NoSnapshot turns repo snapshots off (one-off local runs, where
 	// nothing would reuse them).
 	NoSnapshot bool
+
+	// MaxActiveSessionsPerOrg caps an org's active sessions (queued,
+	// provisioning, setting_up, running) when the worker resumes a
+	// parked one (0: no cap). The API checks it too.
+	MaxActiveSessionsPerOrg int
 }
 
 // OptionsFromConfig returns the Options the configuration sets.
@@ -156,6 +161,8 @@ func OptionsFromConfig(cfg *config.Config) Options {
 		MaxSessionDuration: cfg.MaxSessionDuration,
 		MaxSessionTokens:   cfg.MaxSessionTokens,
 		IdleTimeout:        cfg.SandboxIdleTimeout,
+
+		MaxActiveSessionsPerOrg: cfg.MaxActiveSessionsPerOrg,
 	}
 	if cfg.SandboxProvider == config.SandboxProviderDaytona {
 		o.EgressAllowlist = DefaultEgressAllowlist

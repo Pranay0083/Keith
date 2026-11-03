@@ -32,6 +32,7 @@ const (
 	ReasonCloneFailed        = "clone_failed"
 	ReasonMultiInstallation  = "repos_span_installations"
 	ReasonRepoAccessLost     = "repo_access_lost"
+	ReasonSessionCap         = "session_cap"
 	ReasonSecretsUnreadable  = "secrets_unreadable"
 	ReasonLLMUnavailable     = "llm_unavailable"
 	ReasonShipFailed         = "ship_failed"
@@ -298,7 +299,7 @@ func (s *session) setStatus(ctx context.Context, status events.SessionStatus, re
 	if !s.lease.Valid() {
 		return errLeaseLost
 	}
-	if err := s.w.d.Store.SetSessionStatus(ctx, s.id, status, reason); err != nil {
+	if err := s.writeStatus(ctx, status, reason); err != nil {
 		return err
 	}
 	s.sess.Status = status
@@ -307,6 +308,28 @@ func (s *session) setStatus(ctx context.Context, status events.SessionStatus, re
 		return nil
 	}
 	return err
+}
+
+// writeStatus stores status. Making a parked session (finished or
+// waiting_for_user) active again counts against its org's cap
+// (Options.MaxActiveSessionsPerOrg), checked and written in one
+// transaction under the org lock: over the cap nothing changes and a
+// session_cap failure is returned. The API checks the cap before it
+// queues a resume, but two resumes queued together can both pass there.
+func (s *session) writeStatus(ctx context.Context, status events.SessionStatus, reason string) error {
+	max := s.w.o.MaxActiveSessionsPerOrg
+	if max <= 0 || !slices.Contains(store.ActiveStatuses, status) || slices.Contains(store.ActiveStatuses, s.sess.Status) {
+		return s.w.d.Store.SetSessionStatus(ctx, s.id, status, reason)
+	}
+	ok, err := s.w.d.Store.SetSessionStatusCapped(ctx, s.sess.OrgID, s.id, status, reason, max)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return failf(ReasonSessionCap,
+			"This organization already has %d active sessions, its limit, so this session was not resumed. Send a message again once one of them finishes.", max)
+	}
+	return nil
 }
 
 // fail moves the session to failed with reason and emits an error event.

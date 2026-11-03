@@ -161,6 +161,8 @@ A task error is retried (three times; `ErrBusy` is not counted), but some sessio
 
 A follow-up message, an answer or a Stop on a parked session enqueues `resume_session`.
 
+The API checks the org's active-session cap (`MAX_ACTIVE_SESSIONS_PER_ORG`) before it queues a resume, but two resumes queued together can both pass there. So the worker checks again when it makes a parked session active (its first `provisioning` or `running`): `store.SetSessionStatusCapped` counts the org's active sessions and writes the status in one transaction, under the org row lock (org first, then the session row, as in the API). Over the cap the session fails with `session_cap` and the input stays pending for the next message.
+
 - **Sandbox still parked:** the worker resumes it, writes a fresh token, reattaches the tmux shells and continues from `agent_state`.
 - **Sandbox never fully provisioned** (a crash, a lost lease or a failed clone before provisioning finished): the worker deletes it and provisions a new one. Provisioning ends by writing `/run/keith/provisioned`, holding the sandbox's ID; a sandbox without it is not resumed. A Stop during setup also leaves it unwritten.
 - **Sandbox reaped:** the worker provisions a new one and clones again. It checks out `agent/<id>` if that branch exists on the remote, else starts fresh from the default branch. Uncommitted work from the reaped sandbox is lost; this is a known limitation.

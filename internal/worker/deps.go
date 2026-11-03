@@ -22,6 +22,10 @@ import (
 type Store interface {
 	GetSession(ctx context.Context, id string) (store.Session, error)
 	SetSessionStatus(ctx context.Context, id string, status events.SessionStatus, reason string) error
+	// SetSessionStatusCapped is SetSessionStatus, except that making a
+	// parked session active fails (false) when its org already has max
+	// active sessions.
+	SetSessionStatusCapped(ctx context.Context, orgID, id string, status events.SessionStatus, reason string, max int) (bool, error)
 	SetSessionSandbox(ctx context.Context, id, sandboxID, provider string) error
 	IsCancelRequested(ctx context.Context, id string) (bool, error)
 	ClearCancelRequest(ctx context.Context, id string) error

@@ -1,11 +1,13 @@
 package store_test
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/Pranay0083/keith/internal/events"
+	"github.com/Pranay0083/keith/internal/store"
 	"github.com/Pranay0083/keith/internal/store/storetest"
 )
 
@@ -69,5 +71,44 @@ func TestListStaleLiveSessions(t *testing.T) {
 	}
 	if got := stale(future); !slices.Contains(got, id) {
 		t.Fatalf("running session not listed: %v", got)
+	}
+}
+
+func TestSetSessionStatusCapped(t *testing.T) {
+	s := storetest.New(t)
+	ctx := ctxT(t)
+	f := storetest.Seed(t, s)
+	parked := f.Session.ID
+	if err := s.SetSessionStatus(ctx, parked, events.StatusCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	other := must(s.CreateSession(ctx, store.CreateSessionParams{
+		OrgID: f.Org.ID, CreatedBy: f.User.ID, Prompt: "other", Provider: "anthropic",
+		Model: "claude-opus-5-5", RepoIDs: []string{f.Repo.ID},
+	})) // queued: one active session
+
+	if ok := must(s.SetSessionStatusCapped(ctx, f.Org.ID, parked, events.StatusRunning, "", 1)); ok {
+		t.Fatal("resumed a parked session over the cap")
+	}
+	if got := must(s.GetSession(ctx, parked)); got.Status != events.StatusCompleted {
+		t.Fatalf("status over the cap = %s", got.Status)
+	}
+	// Active to active is never capped.
+	if ok := must(s.SetSessionStatusCapped(ctx, f.Org.ID, other.ID, events.StatusProvisioning, "", 1)); !ok {
+		t.Fatal("an active session was capped")
+	}
+	// Parked to parked is never capped.
+	if ok := must(s.SetSessionStatusCapped(ctx, f.Org.ID, parked, events.StatusFailed, "x", 1)); !ok {
+		t.Fatal("a terminal status was capped")
+	}
+	if ok := must(s.SetSessionStatusCapped(ctx, f.Org.ID, parked, events.StatusRunning, "", 2)); !ok {
+		t.Fatal("refused under the cap")
+	}
+	if got := must(s.GetSession(ctx, parked)); got.Status != events.StatusRunning || got.FinishedAt != nil {
+		t.Fatalf("under the cap: %s (finished %v)", got.Status, got.FinishedAt)
+	}
+	// Another org's session is not this org's.
+	if _, err := s.SetSessionStatusCapped(ctx, other.OrgID, "00000000-0000-4000-8000-000000000000", events.StatusRunning, "", 1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown session: %v", err)
 	}
 }
