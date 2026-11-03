@@ -34,9 +34,12 @@ type Permissions struct {
 }
 
 var (
-	// SandboxPermissions is the sandbox token: clone and push, nothing
-	// else.
-	SandboxPermissions = Permissions{Contents: Write}
+	// SandboxPermissions is the sandbox token: read-only access to the
+	// session's repos' contents, to clone and fetch. It cannot push:
+	// installation tokens cannot be limited to a branch, so the sandbox
+	// never gets write access, and the worker pushes the session branch
+	// itself with PushPermissions.
+	SandboxPermissions = Permissions{Contents: Read}
 	// PushPermissions is the worker's push token: it updates a session's
 	// agent/<session-id> branch from outside the sandbox (ReceivePack),
 	// one repo per token, revoked right after the push. It never enters

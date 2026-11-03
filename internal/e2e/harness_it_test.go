@@ -45,7 +45,9 @@ func sbMust(t testing.TB, sb sandbox.Sandbox, req sandbox.ExecRequest) string {
 
 // TestHarnessGitFromSandbox checks the git server, the fake GitHub's
 // tokens and the credential helper together: a docker sandbox clones
-// and pushes with a minted contents:write token and nothing else.
+// and pushes with a minted contents:write token and nothing else, and
+// the sandbox token (SandboxPermissions, contents:read) fetches but
+// cannot push.
 func TestHarnessGitFromSandbox(t *testing.T) {
 	storetest.Skip(t)
 	ctx := context.Background()
@@ -60,16 +62,17 @@ func TestHarnessGitFromSandbox(t *testing.T) {
 	instID := randID()
 	gh.addInstallation(instID, "acme", "acme/web", "acme/other")
 
-	tok, err := app.InstallationToken(ctx, instID, []string{"acme/web"}, github.SandboxPermissions)
+	tok, err := app.InstallationToken(ctx, instID, []string{"acme/web"}, github.PushPermissions)
 	if err != nil {
-		t.Fatalf("mint sandbox token: %v", err)
+		t.Fatalf("mint a contents:write token: %v", err)
 	}
-	readTok, err := app.InstallationToken(ctx, instID, []string{"acme/web"}, github.Permissions{Contents: github.Read})
+	readTok, err := app.InstallationToken(ctx, instID, []string{"acme/web"}, github.SandboxPermissions)
 	if err != nil {
-		t.Fatalf("mint read-only token: %v", err)
+		t.Fatalf("mint the sandbox token: %v", err)
 	}
 	if m := gh.mints(); len(m) != 2 || !slices.Equal(m[0].Repositories, []string{"acme/web"}) ||
-		m[0].Permissions["contents"] != "write" || m[0].InstallationID != instID {
+		m[0].Permissions["contents"] != "write" || m[0].InstallationID != instID ||
+		len(m[1].Permissions) != 1 || m[1].Permissions["contents"] != "read" {
 		t.Fatalf("mints = %+v", m)
 	}
 
@@ -163,7 +166,7 @@ func TestHarnessGitFromSandbox(t *testing.T) {
 		t.Fatal("clone of a repo outside the token's scope succeeded")
 	}
 
-	// A contents:read token fetches but cannot push.
+	// The sandbox token (contents:read) fetches but cannot push.
 	writeToken(readTok.Value)
 	sbMust(t, sb, sandbox.ExecRequest{Dir: "/workspace/web", Env: noPrompt, Cmd: "git fetch -q origin"})
 	res = sbExec(t, sb, sandbox.ExecRequest{Dir: "/workspace/web", Env: noPrompt,
@@ -267,7 +270,7 @@ func TestHarnessFakeGitHub(t *testing.T) {
 	if _, err := app.InstallationToken(ctx, instID+1, []string{"acme/web"}, github.SandboxPermissions); !errors.Is(err, github.ErrNotFound) {
 		t.Fatalf("mint for an unknown installation: %v", err)
 	}
-	if m := gh.mints(); len(m) != 2 || m[0].Permissions["pull_requests"] != "write" || m[1].Permissions["contents"] != "write" ||
+	if m := gh.mints(); len(m) != 2 || m[0].Permissions["pull_requests"] != "write" || m[1].Permissions["contents"] != "read" ||
 		len(m[1].Permissions) != 1 {
 		t.Fatalf("mints = %+v", m)
 	}

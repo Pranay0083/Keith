@@ -93,15 +93,24 @@ func TestInstallationTokenRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The sandbox can clone and fetch, never push.
 	want := map[string]any{
 		"repositories": []any{"frontend", "backend"},
-		"permissions":  map[string]any{"contents": "write"},
+		"permissions":  map[string]any{"contents": "read"},
 	}
 	if got := f.lastMint(t).Body; !reflect.DeepEqual(got, want) {
 		t.Errorf("sandbox token body = %v, want %v", got, want)
 	}
 	if tok.Value != "ghs_test1" || !tok.ExpiresAt.Equal(f.clock.Now().Add(time.Hour)) {
 		t.Errorf("token = %q expiring %v", tok.Value, tok.ExpiresAt)
+	}
+	// The worker's push token: contents: write, nothing else.
+	if _, err := a.InstallationToken(ctx, 7, []string{"acme/frontend"}, PushPermissions); err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]any{"repositories": []any{"frontend"}, "permissions": map[string]any{"contents": "write"}}
+	if got := f.lastMint(t).Body; !reflect.DeepEqual(got, want) {
+		t.Errorf("push token body = %v, want %v", got, want)
 	}
 
 	if _, err := a.InstallationToken(ctx, 7, []string{"api"}, WorkerPermissions); err != nil {

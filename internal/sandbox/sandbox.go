@@ -8,8 +8,9 @@
 // Trust boundary: a sandbox runs code the agent and the user's repo chose,
 // and users can open shells in it. Never put LLM API keys, the GitHub App
 // private key, agent code or prompts inside one. The only credential a
-// sandbox holds is a short-lived, repo-scoped installation token behind a
-// git credential helper, plus the org's own secrets injected as env vars.
+// sandbox holds is a short-lived, repo-scoped, read-only (contents: read)
+// installation token behind a git credential helper, plus the org's own
+// secrets injected as env vars. Pushes happen in the worker.
 package sandbox
 
 import (

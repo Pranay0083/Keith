@@ -41,8 +41,10 @@ const (
 //     A sandbox resumed after its token expired needs a new TokenSource
 //     and a fresh file before git runs.
 //
-// The token is readable by anything in the sandbox; that is by design
-// (contents: write on the session's repos, 1 hour, revoked at the end).
+// The token is readable by anything in the sandbox; that is by design:
+// it is contents: read on the session's repos (SandboxPermissions), for
+// 1 hour, revoked at the end. It cannot push; the worker pushes the
+// session branch from outside the sandbox.
 func CredentialHelperScript() string {
 	return credentialHelperScript(GitTokenPath, "github.com")
 }

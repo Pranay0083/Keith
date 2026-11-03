@@ -28,9 +28,10 @@ var ErrTokenSourceClosed = errors.New("github: token source revoked")
 // permissions) triple and replaces it when 10 minutes or less remain.
 // It is safe for concurrent use; concurrent callers share one refresh.
 //
-// The worker keeps two per session: one with SandboxPermissions, whose
-// OnRefresh hook rewrites the sandbox's git token file, and one with
-// WorkerPermissions behind Host. Run keeps a source fresh in the
+// The worker keeps two per session: one with SandboxPermissions
+// (read-only), whose OnRefresh hook rewrites the sandbox's git token
+// file, and one with WorkerPermissions behind Host. It also makes a
+// short-lived one with PushPermissions for each push. Run keeps a source fresh in the
 // background so the sandbox file rotates even when nothing calls Token.
 // Revoke both when the session ends.
 //

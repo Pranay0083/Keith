@@ -13,10 +13,14 @@
 // installation token reaches a sandbox.
 //
 //   - Sandbox token: App.InstallationToken (or a TokenSource) with
-//     SandboxPermissions (contents: write only), scoped to the session's
+//     SandboxPermissions (contents: read only), scoped to the session's
 //     repos. It reaches the sandbox only as the file read by the git
 //     credential helper (see CredentialHelperScript). It can clone and
-//     push, and nothing else: it cannot read issues or open PRs.
+//     fetch, and nothing else: it cannot push, read issues or open PRs.
+//   - Push token: PushPermissions (contents: write only), minted by the
+//     worker for one repo per push and revoked right after. It never
+//     enters the sandbox: the worker sends the session branch, and only
+//     that ref, itself (ReceivePack, ParseBundle).
 //   - Worker token: a separate TokenSource with WorkerPermissions
 //     (contents: read, pull_requests: write, issues: read, metadata: read),
 //     also scoped to the session's repos. It backs Host and never enters
@@ -29,7 +33,8 @@
 // internal: ListInstallationRepos mints a metadata: read token for the
 // whole installation, uses it in-process and revokes it.
 //
-// Revoke both tokens when the session ends (TokenSource.Revoke).
+// Revoke the sandbox and worker tokens when the session ends
+// (TokenSource.Revoke).
 //
 // # Setup URL and OAuth
 //
