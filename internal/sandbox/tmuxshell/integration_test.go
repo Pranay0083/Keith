@@ -230,3 +230,75 @@ func TestTmuxShellsInDocker(t *testing.T) {
 		}
 	})
 }
+
+// Regression: shells have a terminal, so `git log` started less, which
+// ignores Ctrl-C; Interrupt only sent Ctrl-C, so the shell stayed busy for
+// good. Shells now set PAGER and GIT_PAGER to cat, and Interrupt escalates
+// to q, SIGTERM and SIGKILL while a foreground program holds the terminal.
+func TestTmuxShellsDontWedgeOnPagers(t *testing.T) {
+	p := sbtest.DockerProvider(t)
+	sb := sbtest.Sandbox(t, p, sandbox.Spec{})
+	ctx := context.Background()
+	m := tmuxshell.New(sb, tmuxshell.WithTimeouts(20*time.Second, 2*time.Second, time.Minute))
+	if err := m.Create(ctx, "sh"); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(cmd string, timeout time.Duration) sandbox.ShellResult {
+		t.Helper()
+		r, err := m.Exec(ctx, "sh", cmd, timeout)
+		if err != nil {
+			t.Fatalf("Exec(%q): %v", cmd, err)
+		}
+		return r
+	}
+	// A shell that is free again runs the next command.
+	free := func(what string) {
+		t.Helper()
+		if r := exec("echo free", 0); r.OutputTail != "free\n" || r.ExitCode != 0 {
+			t.Fatalf("after %s: %+v", what, r)
+		}
+	}
+
+	r := exec(`git init -q /tmp/r && cd /tmp/r && for i in $(seq 1 200); do `+
+		`git -c user.email=a@b -c user.name=a commit -q --allow-empty -m "commit $i"; done; git config core.pager less`, 0)
+	if r.ExitCode != 0 {
+		t.Fatalf("make a repo: %+v", r)
+	}
+	r = exec("git log --oneline", 10*time.Second)
+	if r.TimedOut || r.ExitCode != 0 || !strings.Contains(r.OutputTail, "commit 1\n") {
+		t.Fatalf("git log = %+v", r)
+	}
+	free("git log")
+
+	for _, tc := range []struct{ name, cmd string }{
+		{"less", "seq 1 5000 | less"},                        // quits on q
+		{"ignores Ctrl-C and q", "(trap '' INT; sleep 300)"}, // dies on SIGTERM
+		{"ignores SIGTERM too", "(trap '' INT TERM; sleep 300)"},
+	} {
+		start := time.Now()
+		if r := exec(tc.cmd, time.Second); !r.TimedOut {
+			t.Fatalf("%s: want a timeout, got %+v", tc.name, r)
+		}
+		if err := m.Interrupt(ctx, "sh"); err != nil {
+			t.Fatalf("%s: Interrupt: %v", tc.name, err)
+		}
+		free(tc.name)
+		if d := time.Since(start); d > 20*time.Second {
+			t.Errorf("%s: took %v", tc.name, d)
+		}
+	}
+
+	// A plain Ctrl-C still reports 130, and the q never reached the prompt.
+	if r := exec("sleep 300", time.Second); !r.TimedOut {
+		t.Fatalf("sleep: %+v", r)
+	}
+	if err := m.Interrupt(ctx, "sh"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := m.Read(ctx, "sh"); err != nil || !strings.HasSuffix(out, "[command exited with code 130]") {
+		t.Fatalf("Read after Ctrl-C = %q, %v", out, err)
+	}
+	if r := exec("pwd", 0); r.OutputTail != "/tmp/r\n" {
+		t.Fatalf("pwd = %+v", r)
+	}
+}

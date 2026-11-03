@@ -221,7 +221,11 @@ type Shells interface {
 	// server.
 	Read(ctx context.Context, name string) (string, error)
 
-	// Interrupt sends Ctrl-C to the shell's running command.
+	// Interrupt stops the shell's running command. It sends Ctrl-C and,
+	// while a foreground program still holds the terminal (a pager such
+	// as less ignores Ctrl-C), escalates: it types q, then terminates and
+	// finally kills the shell's foreground process group, so the shell is
+	// free again.
 	Interrupt(ctx context.Context, name string) error
 
 	// List returns the names of open shells in creation order.

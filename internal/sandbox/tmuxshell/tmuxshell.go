@@ -19,6 +19,11 @@
 // Interrupt stops it. A shell whose bash exits (exit, set -e) is restarted
 // in WorkspaceDir and the exit status is reported.
 //
+// Shells set PAGER and GIT_PAGER to cat, since they have a terminal and a
+// pager would wait for keys. Interrupt sends Ctrl-C and escalates to q,
+// SIGTERM and SIGKILL for the terminal's foreground process group while a
+// program other than bash still holds the terminal.
+//
 // Requirements in the sandbox: tmux, bash 5+, and coreutils-style stat,
 // tail, head, base64 and grep (Debian and Alpine images both qualify).
 //
@@ -456,8 +461,10 @@ func (m *Manager) Read(ctx context.Context, name string) (string, error) {
 	return out, nil
 }
 
-// Interrupt implements sandbox.Shells: it sends Ctrl-C, then waits
-// briefly for the command to exit so the shell is free for the next Exec.
+// Interrupt implements sandbox.Shells: it sends Ctrl-C, escalating to q,
+// SIGTERM and SIGKILL while a foreground program ignores it (see the
+// package doc), then waits briefly for the done marker so the shell is
+// free for the next Exec.
 func (m *Manager) Interrupt(ctx context.Context, name string) error {
 	sh, err := m.lookup(name)
 	if err != nil {
