@@ -78,3 +78,58 @@ loop:
 		t.Errorf("live deltas = %q, want %q", live.String(), want)
 	}
 }
+
+// Secrets must not leave the session through what the worker or the
+// agent writes to GitHub: the PR title and body, and the commit message.
+func TestPRTitleBodyAndCommitAreRedacted(t *testing.T) {
+	t.Run("worker ship", func(t *testing.T) {
+		e := newEnv(t)
+		e.addSecret("API_KEY", testSecret, "")
+		s := e.newSession(withPrompt("Rotate " + testSecret + " in the config\nand redeploy"))
+		e.llm.Push(llmtest.Text("Fixed the login bug. For reference the configured key is " + testSecret + "."))
+		e.setChanges(true, 0)
+		if err := e.run(s.ID); err != nil {
+			t.Fatal(err)
+		}
+		prs := e.gh.host.PRRequests()
+		if len(prs) != 1 {
+			t.Fatalf("PR requests = %d", len(prs))
+		}
+		if strings.Contains(prs[0].Title, testSecret) || strings.Contains(prs[0].Body, testSecret) {
+			t.Errorf("the worker's PR carries the secret: %+v", prs[0])
+		}
+		if !strings.Contains(prs[0].Body, secrets.Redacted) {
+			t.Errorf("PR body = %q", prs[0].Body)
+		}
+		for _, c := range e.execs(e.sandbox(s.ID), " commit ") {
+			if strings.Contains(c.Cmd, testSecret) {
+				t.Errorf("commit message carries the secret: %s", c.Cmd)
+			}
+		}
+		e.noSecrets(s.ID, testSecret)
+	})
+	t.Run("open_pr", func(t *testing.T) {
+		e := newEnv(t)
+		e.addSecret("API_KEY", testSecret, "")
+		s := e.newSession()
+		e.llm.PushFunc(func(llm.Request) (*llm.Response, error) {
+			e.setChanges(true, 0)
+			return toolCall("c1", "open_pr", map[string]any{
+				"title": "Use key " + testSecret, "body": "The key is " + testSecret + ".",
+			}), nil
+		})
+		e.llm.Push(llmtest.Text("Opened."))
+		if err := e.run(s.ID); err != nil {
+			t.Fatal(err)
+		}
+		prs := e.gh.host.PRRequests()
+		if len(prs) != 1 || strings.Contains(prs[0].Title, testSecret) || strings.Contains(prs[0].Body, testSecret) {
+			t.Errorf("open_pr's PR carries the secret: %+v", prs)
+		}
+		for _, c := range e.execs(e.sandbox(s.ID), " commit ") {
+			if strings.Contains(c.Cmd, testSecret) {
+				t.Errorf("commit message carries the secret: %s", c.Cmd)
+			}
+		}
+	})
+}

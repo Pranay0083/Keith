@@ -61,6 +61,7 @@ func (s *session) prepareRun(ctx context.Context) error {
 		Host:            s.host,
 		AfterFileChange: s.afterFileChange,
 		OnPROpened:      s.onPROpened,
+		Redact:          s.em.redact,
 	}
 	s.agentRun.Store(run)
 	return s.loadState(ctx, repos)
@@ -452,9 +453,10 @@ func (s *session) shipRepo(ctx context.Context, r *repoState, ch repoChanges, ha
 	return err
 }
 
-// prTitle is the first line of the task, or the issue it refers to.
+// prTitle is the first line of the task, or the issue it refers to,
+// redacted: it becomes the commit subject and the PR title on GitHub.
 func (s *session) prTitle() string {
-	line, _, _ := strings.Cut(strings.TrimSpace(s.sess.Prompt), "\n")
+	line, _, _ := strings.Cut(strings.TrimSpace(s.em.redact(s.sess.Prompt)), "\n")
 	line = strings.TrimSpace(line)
 	if line == "" && s.issue != nil {
 		line = fmt.Sprintf("Resolve %s#%d", s.issue.Repo, s.issue.Number)
@@ -468,10 +470,11 @@ func (s *session) prTitle() string {
 	return line
 }
 
-// prBody is the agent's final message plus the issue reference.
+// prBody is the agent's final message plus the issue reference,
+// redacted: the model may repeat a secret it saw in tool output.
 func (s *session) prBody(r *repoState, finalText string) string {
 	var b strings.Builder
-	if t := strings.TrimSpace(finalText); t != "" {
+	if t := strings.TrimSpace(s.em.redact(finalText)); t != "" {
 		b.WriteString(t)
 		b.WriteString("\n\n")
 	}
