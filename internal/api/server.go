@@ -102,22 +102,22 @@ const (
 
 // Server serves docs/api.md.
 type Server struct {
-	cfg      *config.Config
-	store    *store.Store
-	events   events.Store
-	bus      events.Bus
-	queue    queue.Enqueuer
-	control  control.Publisher
-	gh       GitHub
-	setupGH  GitHub
-	dedupe   Deduper
-	keyring  *secrets.Keyring
-	ready    func(ctx context.Context) error
-	logger   *slog.Logger
-	now      func() time.Time
-	signer   *signer
-	secure   bool // Secure cookie attribute
-	webURL   *url.URL
+	cfg     *config.Config
+	store   *store.Store
+	events  events.Store
+	bus     events.Bus
+	queue   queue.Enqueuer
+	control control.Publisher
+	gh      GitHub
+	setupGH GitHub
+	dedupe  Deduper
+	keyring *secrets.Keyring
+	ready   func(ctx context.Context) error
+	logger  *slog.Logger
+	now     func() time.Time
+	signer  *signer
+	secure  bool // Secure cookie attribute
+	webURL  *url.URL
 
 	slugMu sync.Mutex
 	slug   string
@@ -203,6 +203,12 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/providers", s.handleProviders)
 	api("GET /api/orgs/{org_id}/github/installations", s.handleListInstallations)
 	api("GET /api/orgs/{org_id}/github/install-url", s.handleInstallURL)
+	api("GET /api/orgs/{org_id}/repos", s.handleListRepos)
+	api("GET /api/repos/{repo_id}/profile", s.handleGetProfile)
+	api("PUT /api/repos/{repo_id}/profile", s.handlePutProfile)
+	api("GET /api/orgs/{org_id}/secrets", s.handleListSecrets)
+	api("PUT /api/orgs/{org_id}/secrets/{name}", s.handlePutSecret)
+	api("DELETE /api/orgs/{org_id}/secrets/{name}", s.handleDeleteSecret)
 	mux.Handle("OPTIONS /api/", s.cors(http.HandlerFunc(preflight)))
 	api("/api/", func(http.ResponseWriter, *http.Request) error { return errNotFound })
 

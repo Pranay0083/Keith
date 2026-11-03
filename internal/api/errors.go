@@ -207,3 +207,24 @@ func (s *Server) log(r *http.Request) *slog.Logger {
 	}
 	return s.logger
 }
+
+// validationFields returns a 422 validation_failed for every failed
+// field, or nil if there are none. The message names the first field in
+// alphabetical order, so it is stable.
+func validationFields(fields map[string]string) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	first := ""
+	for k := range fields {
+		if first == "" || k < first {
+			first = k
+		}
+	}
+	return &apiError{
+		Status: http.StatusUnprocessableEntity, Code: codeValidationFailed,
+		Message: first + ": " + fields[first], Fields: fields,
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

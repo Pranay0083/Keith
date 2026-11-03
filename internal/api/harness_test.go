@@ -187,7 +187,7 @@ func newHarness(t *testing.T, st *store.Store) *harness {
 	}
 	h := &harness{
 		t: t, st: st, cfg: testConfig(), q: &queuetest.Recorder{}, ctl: control.NewMem(),
-		gh: &fakeGitHub{token: "gho_user", slug: "keith-agent", canAccess: true},
+		gh:  &fakeGitHub{token: "gho_user", slug: "keith-agent", canAccess: true},
 		bus: memevents.NewBus(), evs: memevents.NewStore(), dedupe: &memDeduper{},
 	}
 	h.srv, err = New(Deps{

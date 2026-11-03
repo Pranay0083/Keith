@@ -53,6 +53,16 @@ func (t ts) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + time.Time(t).UTC().Format(time.RFC3339) + `"`), nil
 }
 
+// UnmarshalJSON reads an RFC 3339 string (for tests and clients in Go).
+func (t *ts) UnmarshalJSON(b []byte) error {
+	var v time.Time
+	if err := v.UnmarshalJSON(b); err != nil {
+		return err
+	}
+	*t = ts(v)
+	return nil
+}
+
 // tsPtr maps nil to JSON null.
 func tsPtr(t *time.Time) *ts {
 	if t == nil {

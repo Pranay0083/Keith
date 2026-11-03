@@ -487,7 +487,7 @@ func TestSetupIT(t *testing.T) {
 		return s
 	}
 	setupURL := func(state string, extra string) string {
-		return "/github/setup?installation_id=" + itoa(newInst) + "&setup_action=install&code=c0de&state=" + url.QueryEscape(state) + extra
+		return "/github/setup?installation_id=" + itoa64(newInst) + "&setup_action=install&code=c0de&state=" + url.QueryEscape(state) + extra
 	}
 	connectErr := func(code string) string { return testWebOrigin + "/connect?error=" + code }
 	linked := func() bool {
@@ -558,8 +558,8 @@ func TestSetupIT(t *testing.T) {
 
 	// The install redirect may land on the OAuth callback instead.
 	w.gh.user = github.User{ID: w.admin.GitHubUserID, Login: "admin"}
-	resp := w.do("GET", "/auth/github/callback?installation_id="+itoa(newInst)+"&setup_action=update&code=c&state="+url.QueryEscape(good), nil, w.as(w.admin.ID))
+	resp := w.do("GET", "/auth/github/callback?installation_id="+itoa64(newInst)+"&setup_action=update&code=c&state="+url.QueryEscape(good), nil, w.as(w.admin.ID))
 	wantRedirect(t, resp, testWebOrigin+"/repos?installed=1")
 }
 
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
