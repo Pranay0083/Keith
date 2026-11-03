@@ -69,16 +69,16 @@ type pollResult struct {
 }
 
 // Poll tuning. The in-sandbox loop checks the log every pollTick, returns
-// streamTicks after output first appears (so live output reaches the UI
+// streamWait after output first appears (so live output reaches the UI
 // in about a quarter second), and reads at most readMax bytes. A backlog
 // over skipMax is skipped down to its last keepTail bytes: the model only
 // sees a tail anyway.
 const (
-	pollTick    = 25 * time.Millisecond
-	streamTicks = 10
-	readMax     = 256 << 10
-	skipMax     = 4 << 20
-	keepTail    = 256 << 10
+	pollTick   = 25 * time.Millisecond
+	streamWait = 250 * time.Millisecond
+	readMax    = 256 << 10
+	skipMax    = 4 << 20
+	keepTail   = 256 << 10
 	// inlineCmdMax is the largest command sent inline (base64 in the exec
 	// command line); bigger ones are written with WriteFile first.
 	inlineCmdMax = 48 << 10
@@ -97,8 +97,8 @@ const sessionPrefix = "k-"
 func (t *sbTerm) session(name string) string { return sessionPrefix + name }
 func (t *sbTerm) logPath(name string) string { return t.dir + "/" + name + ".log" }
 func (t *sbTerm) cmdPath(name string) string { return t.dir + "/" + name + ".cmd" }
-func (t *sbTerm) tmux() string                { return "tmux -L " + sbutil.Quote(t.socket) }
-func (t *sbTerm) target(name string) string   { return sbutil.Quote("=" + t.session(name) + ":") }
+func (t *sbTerm) tmux() string               { return "tmux -L " + sbutil.Quote(t.socket) }
+func (t *sbTerm) target(name string) string  { return sbutil.Quote("=" + t.session(name) + ":") }
 
 // rcFile is the bash rc every shell starts with. PROMPT_COMMAND prints the
 // done marker for the command whose ID is in __KEITH_ID; it is exported
@@ -157,9 +157,10 @@ func (t *sbTerm) create(ctx context.Context, name string) error {
 	}
 }
 
-// pollScript is the shell code shared by send and poll.
+// pollScript is the bash code shared by send and poll. The wait loop is
+// bounded by wall time ($EPOCHREALTIME, bash 5), not a tick count, so
+// fork overhead in a slow sandbox doesn't stretch it.
 func (t *sbTerm) pollScript(name string, p pollSpec) string {
-	ticks := int(p.wait / pollTick)
 	f := sbutil.Quote(t.logPath(name))
 	mark := sbutil.Quote(p.mark)
 	var markRE string
@@ -168,36 +169,42 @@ func (t *sbTerm) pollScript(name string, p pollSpec) string {
 	} else {
 		markRE = "''"
 	}
-	return fmt.Sprintf(`f=%s; off=%d; mark=%s; i=0; g=-1
+	return fmt.Sprintf(`f=%s; off=%d; mark=%s; g=0
+n=${EPOCHREALTIME/[.,]/}; n=${n:-$((SECONDS * 1000000))}
+end=$(( n + %d ))
 while :; do
   s=$(stat -c %%s "$f" 2>/dev/null || echo 0)
-  if [ "$s" -gt "$off" ]; then
-    [ $((s - off)) -ge %d ] && break
-    if [ -n "$mark" ] && tail -c +$((off + 1)) "$f" | grep -aqF -e "$mark"; then break; fi
-    [ "$g" -lt 0 ] && g=$i
-    [ $((i - g)) -ge %d ] && break
+  n=${EPOCHREALTIME/[.,]/}; n=${n:-$((SECONDS * 1000000))}
+  if (( s > off )); then
+    (( s - off >= %d )) && break
+    if [[ -n $mark ]] && tail -c +$((off + 1)) "$f" | grep -aqF -e "$mark"; then break; fi
+    (( g == 0 )) && g=$n
+    (( n - g >= %d )) && break
   fi
-  [ "$i" -ge %d ] && break
+  (( n >= end )) && break
   sleep %s
-  i=$((i + 1))
 done
 st=$(%s display-message -p -t %s '#{pane_dead} #{pane_dead_status}' 2>/dev/null) || st=gone
 s=$(stat -c %%s "$f" 2>/dev/null || echo 0)
 from=$off; sk=
-[ "$s" -lt "$off" ] && from=0
-if [ $((s - from)) -gt %d ]; then
+(( s < off )) && from=0
+if (( s - from > %d )); then
   nf=$((s - %d))
-  [ -n "$mark" ] && sk=$(tail -c +$((from + 1)) "$f" | head -c $((nf - from)) | grep -aoE -e %s | head -n 1)
+  [[ -n $mark ]] && sk=$(tail -c +$((from + 1)) "$f" | head -c $((nf - from)) | grep -aoE -e %s | head -n 1)
   from=$nf
 fi
 printf '%%s|%%s|%%s\n' "$st" "$from" "${sk:--}"
 tail -c +$((from + 1)) "$f" 2>/dev/null | head -c %d | base64
-`, f, p.off, mark, readMax, streamTicks, ticks, strconv.FormatFloat(pollTick.Seconds(), 'f', -1, 64),
+`, f, p.off, mark, p.wait.Microseconds(), readMax, streamWait.Microseconds(),
+		strconv.FormatFloat(pollTick.Seconds(), 'f', -1, 64),
 		t.tmux(), t.target(name), skipMax, keepTail, markRE, readMax)
 }
 
+// bash wraps a bash script for sandbox.Exec, which runs sh -c.
+func bash(script string) string { return "exec bash -c " + sbutil.Quote(script) }
+
 func (t *sbTerm) poll(ctx context.Context, name string, p pollSpec) (pollResult, error) {
-	res, err := t.run(ctx, t.pollScript(name, p), p.wait+30*time.Second)
+	res, err := t.run(ctx, bash(t.pollScript(name, p)), p.wait+30*time.Second)
 	if err != nil {
 		return pollResult{}, err
 	}
@@ -215,7 +222,7 @@ func (t *sbTerm) send(ctx context.Context, name, cmdPath, cmd, line string, p po
 	fmt.Fprintf(&b, "%s send-keys -t %s -l %s \\; send-keys -t %s Enter 2>/dev/null || { echo 'gone|0|-'; exit 0; }\n",
 		t.tmux(), t.target(name), sbutil.Quote(line), t.target(name))
 	b.WriteString(t.pollScript(name, p))
-	res, err := t.run(ctx, b.String(), p.wait+30*time.Second)
+	res, err := t.run(ctx, bash(b.String()), p.wait+30*time.Second)
 	if err != nil {
 		return pollResult{}, err
 	}

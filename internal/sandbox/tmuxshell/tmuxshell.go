@@ -19,7 +19,7 @@
 // Interrupt stops it. A shell whose bash exits (exit, set -e) is restarted
 // in WorkspaceDir and the exit status is reported.
 //
-// Requirements in the sandbox: tmux, bash, and coreutils-style stat,
+// Requirements in the sandbox: tmux, bash 5+, and coreutils-style stat,
 // tail, head, base64 and grep (Debian and Alpine images both qualify).
 //
 // Limitations: shells assume a bash prompt. A command that replaces the
