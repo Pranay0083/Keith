@@ -65,6 +65,10 @@ func (s *session) setup(ctx context.Context, snap store.Snapshot) error {
 		if cmd == "" {
 			continue
 		}
+		if s.stopRequested(ctx) {
+			// A Stop during an earlier install: start no other.
+			return nil
+		}
 		if len(s.repos) == 1 {
 			h, err := s.lockHash(ctx, r)
 			if err != nil {
@@ -252,6 +256,9 @@ func (s *session) verify(ctx context.Context) (*agent.Input, error) {
 		cmd := strings.TrimSpace(r.Profile.TestCmd)
 		if cmd == "" {
 			continue
+		}
+		if s.stopRequested(ctx) {
+			return nil, nil
 		}
 		ch, err := s.changes(ctx, r)
 		if err != nil {

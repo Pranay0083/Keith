@@ -91,7 +91,9 @@ type session struct {
 	timeLimit atomic.Bool
 
 	// extra are worker-made inputs (verify feedback, setup notes) for
-	// the next agent turn. Only the loop goroutine touches it.
+	// the next agent turn of this run. They never start a run on their
+	// own, and a cancellation or failure drops them. Only the loop
+	// goroutine touches it.
 	extra []agent.Input
 
 	synthMu sync.Mutex
@@ -183,7 +185,7 @@ func (s *session) run(ctx context.Context) error {
 		status := s.sess.Status
 		live := status == events.StatusQueued || status == events.StatusProvisioning ||
 			status == events.StatusSettingUp || status == events.StatusRunning
-		if !live && len(pending) == 0 && len(s.extra) == 0 {
+		if !live && len(pending) == 0 {
 			return nil // terminal or waiting with nothing to do: a spurious wakeup
 		}
 		if status == events.StatusWaitingForUser && !hasAnswer(pending) {
@@ -225,6 +227,11 @@ func (s *session) work(ctx context.Context) error {
 			}
 			return s.interruptedOr(ctx, err)
 		}
+	}
+	if s.stop.Load() {
+		// A Stop (or the time limit) during provisioning or setup: the
+		// agent does not start.
+		return s.stopped(ctx)
 	}
 	return s.agentLoop(ctx)
 }
@@ -288,6 +295,7 @@ func (s *session) setStatus(ctx context.Context, status events.SessionStatus, re
 // It returns nil once recorded, so the task is not retried.
 func (s *session) fail(ctx context.Context, reason, msg string) error {
 	s.halted = true
+	s.extra = nil
 	s.log.Warn("session failed", "reason", reason, "detail", s.em.redact(msg))
 	_ = s.w.d.Store.ClearOpenQuestion(ctx, s.id)
 	if err := s.setStatus(ctx, events.StatusFailed, reason); err != nil {
@@ -305,6 +313,7 @@ func (s *session) fail(ctx context.Context, reason, msg string) error {
 // clear the flag so a later follow-up message is not cancelled at once.
 func (s *session) finishCancelled(ctx context.Context) error {
 	s.stop.Store(true)
+	s.extra = nil
 	s.interruptShells(ctx)
 	if !s.sess.Status.Terminal() {
 		if err := s.w.d.Store.ClearOpenQuestion(ctx, s.id); err != nil {
