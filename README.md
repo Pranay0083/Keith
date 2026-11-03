@@ -15,7 +15,7 @@ See [docs/architecture.md](docs/architecture.md) for the package map, the trust 
 
 ## Status
 
-Phase 23: cloud pivot in progress; V1 being built. The macOS assistant this repo used to be has been removed (it is in git history). The service commands are stubs for now.
+Phase 23: cloud pivot in progress; V1 being built. The macOS assistant this repo used to be has been removed (it is in git history). `keith api` serves the API in docs/api.md; `keith worker` is still a stub.
 
 ## Development
 

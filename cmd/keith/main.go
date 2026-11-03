@@ -38,17 +38,6 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
-func newAPICmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "api",
-		Short: "Run the HTTP and WebSocket API service",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("api: %w", errNotImplemented)
-		},
-	}
-}
-
 func newWorkerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
