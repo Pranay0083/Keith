@@ -21,7 +21,9 @@ var errOutOfScope = errors.New("repo is not in this session's token scope")
 // GitHub with a worker TokenSource (WorkerPermissions), from outside the
 // sandbox, and only for the repos that source is scoped to.
 type Host struct {
-	tokens      *TokenSource
+	token       func(ctx context.Context) (string, error)
+	newClient   func(token string) (*gh.Client, error)
+	repos       []string
 	maxComments int
 	perPage     int
 }
@@ -32,15 +34,69 @@ var _ agent.RepoHost = (*Host)(nil)
 // WorkerPermissions and the session's repos. Never give it the sandbox
 // TokenSource.
 func NewHost(tokens *TokenSource) *Host {
-	return &Host{tokens: tokens, maxComments: MaxIssueComments, perPage: 100}
+	return &Host{
+		token: func(ctx context.Context) (string, error) {
+			t, err := tokens.Token(ctx)
+			return t.Value, err
+		},
+		newClient:   tokens.app.client,
+		repos:       tokens.repos,
+		maxComments: MaxIssueComments,
+		perPage:     100,
+	}
 }
 
-func (h *Host) client(ctx context.Context) (*gh.Client, error) {
-	t, err := h.tokens.Token(ctx)
+// PATHostOptions configures NewPATHost.
+type PATHostOptions struct {
+	// APIBaseURL is the REST API base, default DefaultAPIBaseURL.
+	APIBaseURL string
+	// HTTPClient makes every request. The default has a 30 s timeout.
+	HTTPClient *http.Client
+}
+
+// NewPATHost returns a Host that authenticates with a personal access
+// token instead of an App installation token, for `keith run --local`
+// (V0, single user). Like NewHost it serves only the given repos
+// (owner/name). The token's own scopes are whatever its owner gave it,
+// so prefer a fine-grained token limited to those repos.
+func NewPATHost(token string, repos []string, opts PATHostOptions) (*Host, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("github: empty personal access token")
+	}
+	if len(repos) == 0 {
+		return nil, ErrNoRepos
+	}
+	for _, r := range repos {
+		if _, _, err := splitRepo(r); err != nil {
+			return nil, err
+		}
+	}
+	api, err := baseURL("APIBaseURL", opts.APIBaseURL, DefaultAPIBaseURL)
 	if err != nil {
 		return nil, err
 	}
-	return h.tokens.app.client(t.Value)
+	if !strings.HasSuffix(api, "/") {
+		api += "/"
+	}
+	hc := opts.HTTPClient
+	if hc == nil {
+		hc = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+	return &Host{
+		token:       func(context.Context) (string, error) { return token, nil },
+		newClient:   func(t string) (*gh.Client, error) { return restClient(hc, api, t) },
+		repos:       append([]string(nil), repos...),
+		maxComments: MaxIssueComments,
+		perPage:     100,
+	}, nil
+}
+
+func (h *Host) client(ctx context.Context) (*gh.Client, error) {
+	t, err := h.token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return h.newClient(t)
 }
 
 // scoped splits repo and checks that the token source covers it.
@@ -49,7 +105,7 @@ func (h *Host) scoped(repo string) (owner, name string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	for _, r := range h.tokens.repos {
+	for _, r := range h.repos {
 		o, n, hasOwner := strings.Cut(r, "/")
 		if !hasOwner {
 			o, n = "", r

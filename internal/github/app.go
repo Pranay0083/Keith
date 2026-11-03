@@ -177,9 +177,15 @@ func (a *App) appJWT() (string, error) {
 // client returns a go-github client that sends token as a bearer
 // credential, and only to the configured API origin.
 func (a *App) client(token string) (*gh.Client, error) {
+	return restClient(a.hc, a.apiBase, token)
+}
+
+// restClient returns a go-github client on apiBase that sends token as a
+// bearer credential.
+func restClient(hc *http.Client, apiBase, token string) (*gh.Client, error) {
 	c, err := gh.NewClient(
-		gh.WithHTTPClient(a.hc),
-		gh.WithURLs(&a.apiBase, &a.apiBase),
+		gh.WithHTTPClient(hc),
+		gh.WithURLs(&apiBase, &apiBase),
 		gh.WithUserAgent(userAgent),
 		gh.WithAuthToken(token),
 	)

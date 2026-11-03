@@ -120,3 +120,59 @@ func TestCredentialHelperWithGit(t *testing.T) {
 		t.Errorf("git credential fill = %q", out)
 	}
 }
+
+func TestGitRemote(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	for _, bad := range []string{"", "ftp://x/", "https://u:p@github.com/", "https://github.com/?q=1", "github.com"} {
+		if _, err := ParseGitRemote(bad); err == nil {
+			t.Errorf("ParseGitRemote(%q) succeeded", bad)
+		}
+	}
+	r, err := ParseGitRemote("https://github.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := r.CloneURL("acme/api"); u != "https://github.com/acme/api.git" {
+		t.Errorf("clone URL = %q", u)
+	}
+	if _, err := r.CloneURL("acme/../x"); err == nil {
+		t.Error("CloneURL accepted a bad name")
+	}
+	if r.CredentialKey() != "https://github.com" {
+		t.Errorf("key = %q", r.CredentialKey())
+	}
+	if r.CredentialHelperScript() != CredentialHelperScript() {
+		t.Error("the github.com remote's helper differs from CredentialHelperScript")
+	}
+
+	local, err := ParseGitRemote("http://host.docker.internal:8081/git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := local.CloneURL("acme/api"); u != "http://host.docker.internal:8081/git/acme/api.git" {
+		t.Errorf("clone URL = %q", u)
+	}
+	if local.CredentialKey() != "http://host.docker.internal:8081" {
+		t.Errorf("key = %q", local.CredentialKey())
+	}
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "git-token")
+	if err := os.WriteFile(tokenPath, []byte("ghs_abc123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.Replace(local.CredentialHelperScript(), "'"+GitTokenPath+"'", shellQuote(tokenPath), 1)
+	helper := filepath.Join(dir, "helper")
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out := runHelper(t, helper, "get", "protocol=http\nhost=host.docker.internal:8081\n\n"); out != "username=x-access-token\npassword=ghs_abc123\n" {
+		t.Errorf("local remote answer = %q", out)
+	}
+	for _, in := range []string{"protocol=https\nhost=host.docker.internal:8081\n\n", "protocol=http\nhost=github.com\n\n", "protocol=http\nhost=host.docker.internal\n\n"} {
+		if out := runHelper(t, helper, "get", in); out != "" {
+			t.Errorf("answered %q with %q", in, out)
+		}
+	}
+}

@@ -1,6 +1,10 @@
 package github
 
-import "strings"
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
 
 // Paths inside the sandbox for the git credential helper.
 const (
@@ -43,8 +47,55 @@ func CredentialHelperScript() string {
 	return credentialHelperScript(GitTokenPath, "github.com")
 }
 
+// GitRemote is where a sandbox clones from: a base URL such as
+// https://github.com/ (the default) or, for local development and tests,
+// a git server such as http://host.docker.internal:8081/git/.
+type GitRemote struct {
+	// Base is the parsed base URL, with a trailing slash.
+	Base *url.URL
+}
+
+// ParseGitRemote checks base: http or https, a host, no user info, query
+// or fragment.
+func ParseGitRemote(base string) (GitRemote, error) {
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil ||
+		u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return GitRemote{}, fmt.Errorf("github: git base URL %q is not an http(s) base URL", base)
+	}
+	if !strings.HasSuffix(u.Path, "/") {
+		u.Path += "/"
+	}
+	u.RawPath = ""
+	return GitRemote{Base: u}, nil
+}
+
+// CloneURL returns the plain clone URL of owner/name: no token, ever.
+func (r GitRemote) CloneURL(fullName string) (string, error) {
+	if _, _, err := splitRepo(fullName); err != nil {
+		return "", err
+	}
+	return r.Base.String() + fullName + ".git", nil
+}
+
+// CredentialKey is the URL prefix git matches the credential helper
+// against: scheme://host[:port] (git config credential.<key>.helper).
+func (r GitRemote) CredentialKey() string {
+	return r.Base.Scheme + "://" + r.Base.Host
+}
+
+// CredentialHelperScript returns the helper for this remote: like the
+// package-level CredentialHelperScript, but answering only for the
+// remote's scheme and host (host:port when a port is set, as git sends
+// it).
+func (r GitRemote) CredentialHelperScript() string {
+	return strings.NewReplacer("@TOKEN_PATH@", shellQuote(GitTokenPath), "@HOST@", shellQuote(r.Base.Host),
+		"@PROTOCOL@", shellQuote(r.Base.Scheme)).Replace(credentialHelperTemplate)
+}
+
 func credentialHelperScript(tokenPath, host string) string {
-	return strings.NewReplacer("@TOKEN_PATH@", shellQuote(tokenPath), "@HOST@", shellQuote(host)).Replace(credentialHelperTemplate)
+	return strings.NewReplacer("@TOKEN_PATH@", shellQuote(tokenPath), "@HOST@", shellQuote(host),
+		"@PROTOCOL@", shellQuote("https")).Replace(credentialHelperTemplate)
 }
 
 func shellQuote(s string) string {
@@ -53,10 +104,11 @@ func shellQuote(s string) string {
 
 const credentialHelperTemplate = `#!/bin/sh
 # git-credential-keith: git credential helper for Keith sandboxes.
-# Answers "get" for https on one host with the installation token in a
+# Answers "get" for one protocol and host with the installation token in a
 # file the worker rewrites to rotate it. Nothing is cached.
 token_file=@TOKEN_PATH@
 allowed_host=@HOST@
+allowed_protocol=@PROTOCOL@
 
 [ "$1" = get ] || exit 0
 
@@ -70,7 +122,7 @@ while IFS= read -r line; do
 	esac
 done
 
-[ "$protocol" = https ] || exit 0
+[ "$protocol" = "$allowed_protocol" ] || exit 0
 [ "$host" = "$allowed_host" ] || exit 0
 [ -r "$token_file" ] || exit 0
 

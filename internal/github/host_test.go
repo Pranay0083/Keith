@@ -293,3 +293,35 @@ func TestHostOpenPRRejects(t *testing.T) {
 		t.Errorf("invalid requests reached GitHub: %d creates, %d lists", len(creates), len(lists))
 	}
 }
+
+func TestPATHost(t *testing.T) {
+	f := newFakeGitHub(t)
+	serveIssue(f, 1, 10)
+	f.mu.Lock()
+	f.live["ghp_personal"] = true
+	f.mu.Unlock()
+
+	if _, err := NewPATHost("", []string{"acme/api"}, PATHostOptions{}); err == nil {
+		t.Error("empty token accepted")
+	}
+	if _, err := NewPATHost("ghp_personal", nil, PATHostOptions{}); !errors.Is(err, ErrNoRepos) {
+		t.Errorf("no repos: err = %v", err)
+	}
+	if _, err := NewPATHost("ghp_personal", []string{"not a repo"}, PATHostOptions{}); err == nil {
+		t.Error("bad repo accepted")
+	}
+	h, err := NewPATHost("ghp_personal", []string{"acme/api"}, PATHostOptions{APIBaseURL: f.srv.URL, HTTPClient: f.srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	is, err := h.ReadIssue(context.Background(), "acme/api", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if is.Title != "Login fails" || len(is.Comments) != 1 {
+		t.Errorf("issue = %+v", is)
+	}
+	if _, err := h.ReadIssue(context.Background(), "acme/other", 7); !errors.Is(err, errOutOfScope) {
+		t.Errorf("out of scope: err = %v", err)
+	}
+}
