@@ -17,7 +17,7 @@ const statusBadge: Record<InstallationStatus, { label: string; tone: Tone }> = {
 };
 
 /** The message for `/connect?error=<code>` (docs/api.md, GET /github/setup). */
-function setupError(code: string): { title: string; body: string } {
+export function setupError(code: string): { title: string; body: string } {
   switch (code) {
     case "setup_state":
       return {
@@ -26,13 +26,18 @@ function setupError(code: string): { title: string; body: string } {
       };
     case "installation_not_verified":
       return {
-        title: "GitHub didn't confirm the installation",
-        body: "We couldn't verify that your GitHub account can access that installation. Install again while signed in to GitHub as the user you sign in to Keith with.",
+        title: "Couldn't confirm you own that installation",
+        body: "Only the GitHub account the app is installed on, or an owner of the GitHub organization it's installed on, can connect it. Access to its repos isn't enough. Install again while signed in to GitHub with the account you use for Keith.",
       };
     case "installation_other_org":
       return {
         title: "That installation is linked to another organization",
         body: "This GitHub account is already connected to a different Keith organization. Switch to that organization, or uninstall the app there first.",
+      };
+    case "setup_failed":
+      return {
+        title: "The install didn't finish",
+        body: "GitHub returned an error while we checked the installation. If it's on a GitHub organization, the app needs the “Members: Read-only” organization permission, and the organization must accept it. Then try again.",
       };
     default:
       return {
@@ -47,6 +52,7 @@ const permissions = [
   { name: "Pull requests", access: "Read and write" },
   { name: "Issues", access: "Read" },
   { name: "Metadata", access: "Read" },
+  { name: "Organization members", access: "Read" },
 ] as const;
 
 export function ConnectPage() {
