@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/google/uuid"
-
 	"github.com/Pranay0083/keith/internal/store"
 )
 
@@ -92,7 +90,12 @@ func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) error {
 	repoID := ""
 	repoFullName := ""
 	if len(req.RepoID) > 0 && string(req.RepoID) != "null" {
-		if json.Unmarshal(req.RepoID, &repoID) != nil || uuid.Validate(repoID) != nil {
+		var ok bool
+		if json.Unmarshal(req.RepoID, &repoID) == nil {
+			repoID, ok = canonicalID(repoID)
+		}
+		if !ok {
+			repoID = ""
 			fields["repo_id"] = "must be a repo ID or null"
 		} else {
 			repo, err := s.store.GetRepo(r.Context(), repoID)
@@ -135,8 +138,11 @@ func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) erro
 		return err
 	}
 	repoID := r.URL.Query().Get("repo_id")
-	if repoID != "" && uuid.Validate(repoID) != nil {
-		return errBadRequest("repo_id is not a valid ID.")
+	if repoID != "" {
+		var ok bool
+		if repoID, ok = canonicalID(repoID); !ok {
+			return errBadRequest("repo_id is not a valid ID.")
+		}
 	}
 	name := r.PathValue("name")
 	if !validSecretName(name) {

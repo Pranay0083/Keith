@@ -11,13 +11,28 @@ import (
 	"github.com/Pranay0083/keith/internal/store"
 )
 
-// pathID returns the path wildcard name, which must be a UUID (else 400).
+// canonicalID returns v as a canonical UUID string (lower case, with
+// hyphens), or false if v is not a UUID. uuid.Parse also takes upper
+// case, braces, a urn:uuid: prefix and no hyphens; every ID that enters
+// the API goes through here, because IDs are also compared as strings (a
+// secret is sealed with its org and repo IDs) and Postgres rejects the
+// urn form.
+func canonicalID(v string) (string, bool) {
+	u, err := uuid.Parse(v)
+	if err != nil {
+		return "", false
+	}
+	return u.String(), true
+}
+
+// pathID returns the path wildcard name, which must be a UUID (else 400),
+// in canonical form.
 func pathID(r *http.Request, name string) (string, error) {
-	v := r.PathValue(name)
-	if uuid.Validate(v) != nil {
+	id, ok := canonicalID(r.PathValue(name))
+	if !ok {
 		return "", errBadRequest("%s is not a valid ID.", name)
 	}
-	return v, nil
+	return id, nil
 }
 
 // orgAccess checks that the signed-in user is a member of the path's

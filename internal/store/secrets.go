@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // SecretMeta is a secret without its value, for listing.
@@ -34,8 +36,21 @@ func (c SecretCiphertext) AAD() []byte { return SecretAAD(c.OrgID, c.RepoID, c.N
 // sealed with (secrets.Keyring.Seal/Open), binding the ciphertext to its
 // org, repo ("" for an org secret) and name so it cannot be moved to
 // another row.
+//
+// The IDs are canonicalized first (lower case, hyphenated), as Postgres
+// returns them, so a caller holding an upper-case ID still seals a value
+// the row's AAD opens.
 func SecretAAD(orgID, repoID, name string) []byte {
-	return []byte("keith/secret/v1\x00org=" + orgID + "\x00repo=" + repoID + "\x00name=" + name)
+	return []byte("keith/secret/v1\x00org=" + canonicalUUID(orgID) + "\x00repo=" + canonicalUUID(repoID) + "\x00name=" + name)
+}
+
+// canonicalUUID returns id in canonical form, or id unchanged if it is
+// not a UUID.
+func canonicalUUID(id string) string {
+	if u, err := uuid.Parse(id); err == nil {
+		return u.String()
+	}
+	return id
 }
 
 // PutSecretParams writes a secret. Ciphertext must come from

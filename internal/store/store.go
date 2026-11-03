@@ -154,8 +154,11 @@ func (s *Store) WithTx(ctx context.Context, fn func(tx *Store) error) (err error
 	return nil
 }
 
-// validID reports whether id is a well-formed uuid.
-func validID(id string) bool { return uuid.Validate(id) == nil }
+// validID reports whether id is a well-formed uuid in the hyphenated
+// 36-character form, in either case. uuid.Validate alone also accepts
+// forms Postgres rejects (urn:uuid:…), which would surface as a driver
+// error instead of ErrNotFound.
+func validID(id string) bool { return len(id) == 36 && uuid.Validate(id) == nil }
 
 // validIDs reports whether every id is a well-formed uuid.
 func validIDs(ids []string) bool {

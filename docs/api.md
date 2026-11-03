@@ -9,7 +9,7 @@ Keywords: **must** and **never** are requirements. Anything marked *informative*
 - **Base URLs.** The API is served from `PUBLIC_URL` (for example `https://api.keith.dev`). The web app is served from `WEB_ORIGIN` (for example `https://app.keith.dev`). The web app reads the API base from `NEXT_PUBLIC_API_URL`.
 - **Same site.** `PUBLIC_URL` and `WEB_ORIGIN` must share a registrable domain (`app.example.com` + `api.example.com`). The session cookie is `SameSite=Lax` and host-only on the API host, so a cross-site API never receives it from `fetch`. In development `http://localhost:3000` and `http://localhost:8080` are the same site.
 - **JSON.** Request and response bodies are `application/json; charset=utf-8`. A request with a body must send `Content-Type: application/json`, or the API answers `415`. Bodies over 1 MiB get `413`. Unknown request fields are ignored.
-- **IDs** are UUID strings. **Timestamps** are RFC 3339 strings in UTC (`2026-11-02T10:15:03Z`). Nullable fields are always present and set to `null`, never omitted, unless marked optional (`?`).
+- **IDs** are UUID strings, returned in canonical form (lower case, with hyphens). In paths, query strings and bodies the API also accepts the other standard spellings (upper case, braces, a `urn:uuid:` prefix, no hyphens) and treats them as the canonical ID. **Timestamps** are RFC 3339 strings in UTC (`2026-11-02T10:15:03Z`). Nullable fields are always present and set to `null`, never omitted, unless marked optional (`?`).
 - **Lists** that are not paginated are returned as a bare JSON array. Paginated lists are objects with a `next_cursor`.
 - **Success statuses.** `200` with a body, `201` when a resource was created, `202` when work was accepted for the worker, `204` with no body.
 

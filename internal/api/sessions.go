@@ -10,8 +10,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-
 	"github.com/Pranay0083/keith/internal/config"
 	"github.com/Pranay0083/keith/internal/events"
 	"github.com/Pranay0083/keith/internal/github"
@@ -175,9 +173,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) err
 
 	// repo_ids: distinct, accessible repos of this org, in order.
 	repoIDs := make([]string, 0, len(req.RepoIDs))
-	for _, id := range req.RepoIDs {
+	for _, raw := range req.RepoIDs {
+		id, ok := canonicalID(raw)
 		switch {
-		case uuid.Validate(id) != nil:
+		case !ok:
+			id = raw
 			fields["repo_ids"] = "must be repo IDs"
 		case containsString(repoIDs, id):
 			fields["repo_ids"] = "must be distinct"
