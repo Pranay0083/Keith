@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Pranay0083/keith/internal/agent"
 	"github.com/Pranay0083/keith/internal/events"
@@ -460,11 +459,12 @@ func (s *session) shipRepo(ctx context.Context, r *repoState, ch repoChanges, ha
 		ch.unpushed++
 	}
 	if ch.unpushed > 0 || !hasPR {
-		if _, err := s.execOK(ctx, r.Path, "git push -q -u origin "+shellQuote(r.Branch), 5*time.Minute); err != nil {
+		// The worker pushes, never the sandbox (push.go).
+		if err := s.push(ctx, r); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return failf(ReasonShipFailed, "Could not push %s to %s: %s", r.Branch, r.FullName, s.em.redact(err.Error()))
+			return failf(ReasonShipFailed, "Could not push %s to %s: %s", r.Branch, r.FullName, err.Error())
 		}
 	}
 	if err := s.saveDiff(ctx, r); err != nil {

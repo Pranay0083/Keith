@@ -108,6 +108,7 @@ func (s *session) ensureEnv(ctx context.Context) error {
 		}
 	}
 	inst := s.sess.Repos[0].InstallationID
+	s.installationID = inst
 	var names []string
 	for _, r := range s.sess.Repos {
 		if r.InstallationID != inst {

@@ -25,7 +25,7 @@ func TestShipChecksHEADIsTheSessionBranch(t *testing.T) {
 		t.Errorf("session = %s/%s", x.Status, x.StatusReason)
 	}
 	sb := e.sandbox(s.ID)
-	if n, m := len(e.execs(sb, " commit ")), len(e.execs(sb, "git push")); n+m != 0 {
+	if n, m := len(e.execs(sb, " commit ")), len(e.execs(sb, "git push"))+len(e.pushes()); n+m != 0 {
 		t.Errorf("commits %d, pushes %d on the wrong branch", n, m)
 	}
 	if prs := e.gh.host.PRRequests(); len(prs) != 0 {

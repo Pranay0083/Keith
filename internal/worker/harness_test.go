@@ -123,7 +123,22 @@ type fakeGitHub struct {
 	mu      sync.Mutex
 	sandbox []*fakeTokens
 	worker  []*fakeTokens
+	push    []*fakeTokens
 	n       int
+}
+
+func (g *fakeGitHub) PushTokens(inst int64, repos []string) (TokenSource, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	t := newFakeTokens(fmt.Sprintf("ghs_push%d", len(g.push)+1), repos)
+	g.push = append(g.push, t)
+	return t, nil
+}
+
+func (g *fakeGitHub) pushTokens() []*fakeTokens {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.push)
 }
 
 func (g *fakeGitHub) SandboxTokens(inst int64, repos []string) (TokenSource, error) {
@@ -225,6 +240,62 @@ type tenv struct {
 	diffText string
 	cloneOut string
 	branch   string
+
+	// The fake remote the worker pushes to.
+	remoteRefs map[string]string
+	updates    []fakeUpdate
+	updateErr  error
+}
+
+// fakeUpdate is one push the fake remote received.
+type fakeUpdate struct {
+	Repo, Token string
+	github.RefUpdate
+	Pack []byte
+}
+
+// fakeTip is the fake sandbox's branch tip after ahead commits.
+func fakeTip(ahead int) string { return fmt.Sprintf("%040x", 0xc0ffee00+ahead) }
+
+// gitPush is the worker's GitPusher: the fake remote.
+func (e *tenv) gitPush(_ context.Context, repo, token string) (PushRemote, error) {
+	return &fakeRemote{e: e, repo: repo, token: token}, nil
+}
+
+type fakeRemote struct {
+	e           *tenv
+	repo, token string
+}
+
+func (r *fakeRemote) Ref(name string) string {
+	r.e.mu.Lock()
+	defer r.e.mu.Unlock()
+	if name == "refs/heads/main" {
+		return fakeTip(0)
+	}
+	return r.e.remoteRefs[r.repo+" "+name]
+}
+
+func (r *fakeRemote) Update(_ context.Context, u github.RefUpdate, pack []byte) error {
+	r.e.mu.Lock()
+	defer r.e.mu.Unlock()
+	if r.e.updateErr != nil {
+		return r.e.updateErr
+	}
+	if r.e.remoteRefs == nil {
+		r.e.remoteRefs = map[string]string{}
+	}
+	r.e.updates = append(r.e.updates, fakeUpdate{Repo: r.repo, Token: r.token, RefUpdate: u, Pack: slices.Clone(pack)})
+	r.e.remoteRefs[r.repo+" "+u.Ref] = u.New
+	r.e.pushed = 0
+	return nil
+}
+
+// pushes returns the updates the fake remote received.
+func (e *tenv) pushes() []fakeUpdate {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.updates)
 }
 
 func newEnv(t *testing.T) *tenv {
@@ -300,6 +371,21 @@ func (e *tenv) handle(req sandbox.ExecRequest) (*sandbox.ExecResult, error) {
 		e.pushed = 0
 		e.mu.Unlock()
 		return ok("")
+	case strings.Contains(c, "git bundle create"):
+		// The worker's push script: the remote has the fake commits
+		// already, so no bundle is needed. The sandbox's tracking ref
+		// is the remote's value.
+		e.mu.Lock()
+		lease := ""
+		for k, v := range e.remoteRefs {
+			if strings.HasSuffix(k, " refs/heads/"+branch) {
+				lease = v
+			}
+		}
+		e.mu.Unlock()
+		return ok(fmt.Sprintf("tip=%s\nlease=%s\nmode=empty\n", fakeTip(ahead), lease))
+	case strings.HasPrefix(c, "git update-ref"):
+		return ok("")
 	case c == "git rev-parse --abbrev-ref HEAD":
 		return ok(branch + "\n")
 	case c == "git add -A":
@@ -350,7 +436,7 @@ func (e *tenv) worker() *Worker {
 	}
 	w, err := New(Deps{
 		Store: e.store, Events: e.evs, Bus: e.bus, Leases: e.leases, Control: e.ctl,
-		Sandboxes: e.sbx, GitHub: e.gh,
+		Sandboxes: e.sbx, GitHub: e.gh, GitPush: e.gitPush,
 		LLM: func(name string) (llm.Provider, error) {
 			if name == "missing" {
 				return nil, errors.New("no key")

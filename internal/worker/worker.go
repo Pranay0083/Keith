@@ -75,6 +75,9 @@ type Deps struct {
 	// Sandboxes creates and finds sandboxes.
 	Sandboxes sandbox.Provider
 	GitHub    GitHub
+	// GitPush opens the worker's pushes; nil means git's smart HTTP
+	// protocol (github.ReceivePack) to Options.GitPushBaseURL.
+	GitPush GitPusher
 	// LLM returns the provider a session is pinned to (sessions.provider).
 	LLM func(provider string) (llm.Provider, error)
 	// Keyring opens org and repo secrets. nil fails sessions that have
@@ -90,8 +93,15 @@ type Deps struct {
 // Options tune the worker. Zero values mean the defaults.
 type Options struct {
 	// GitBaseURL is where repos are cloned from (default
-	// https://github.com/).
+	// https://github.com/). The worker pushes there too.
 	GitBaseURL string
+	// GitPushBaseURL is where the worker itself pushes, when it reaches
+	// the git server under another name than sandboxes do (tests); ""
+	// means GitBaseURL.
+	GitPushBaseURL string
+	// MaxPushBytes caps the bundle one push reads from the sandbox
+	// (default DefaultMaxPushBytes).
+	MaxPushBytes int64
 	// SandboxTemplate is the image or template new sandboxes start from
 	// when there is no snapshot; "" means the provider's default.
 	SandboxTemplate string
@@ -197,6 +207,12 @@ func (o Options) withDefaults() Options {
 	if o.GitBaseURL == "" {
 		o.GitBaseURL = config.DefaultGitBaseURL
 	}
+	if o.GitPushBaseURL == "" {
+		o.GitPushBaseURL = o.GitBaseURL
+	}
+	if o.MaxPushBytes <= 0 {
+		o.MaxPushBytes = DefaultMaxPushBytes
+	}
 	if o.MaxSessionDuration <= 0 {
 		o.MaxSessionDuration = DefaultMaxSessionDuration
 	}
@@ -265,6 +281,13 @@ func New(d Deps, o Options) (*Worker, error) {
 	remote, err := github.ParseGitRemote(o.GitBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("worker: %w", err)
+	}
+	if d.GitPush == nil {
+		pushRemote, err := github.ParseGitRemote(o.GitPushBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("worker: push: %w", err)
+		}
+		d.GitPush = receivePackPusher(pushRemote)
 	}
 	if d.NewShells == nil {
 		d.NewShells = TmuxShells

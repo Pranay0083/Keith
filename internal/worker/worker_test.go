@@ -792,8 +792,7 @@ func TestShipUsesTheAgentsPR(t *testing.T) {
 	if n := len(e.events(s.ID, events.TypePROpened)); n != 1 {
 		t.Errorf("pr.opened = %d", n)
 	}
-	sb := e.sandbox(s.ID)
-	if n := len(e.execs(sb, "git push")); n < 2 {
+	if n := len(e.pushes()); n < 1 {
 		t.Errorf("the worker did not push the leftover changes: %d pushes", n)
 	}
 	if st := e.st.Session(s.ID); st.Status != events.StatusCompleted || st.Repos[0].PRNumber != 100 {
@@ -815,7 +814,7 @@ func TestNoPRMode(t *testing.T) {
 			t.Error("open_pr offered in NoPR mode")
 		}
 	}
-	if len(e.gh.host.PRRequests()) != 0 || len(e.execs(e.sandbox(s.ID), "git push")) != 0 {
+	if len(e.gh.host.PRRequests()) != 0 || len(e.execs(e.sandbox(s.ID), "git push")) != 0 || len(e.pushes()) != 0 {
 		t.Error("pushed or opened a PR in NoPR mode")
 	}
 	if e.st.Session(s.ID).Status != events.StatusCompleted {

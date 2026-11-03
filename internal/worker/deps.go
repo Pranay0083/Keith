@@ -72,13 +72,18 @@ type TokenSource interface {
 
 var _ TokenSource = (*github.TokenSource)(nil)
 
-// GitHub mints a session's two credentials. They never mix: the sandbox
+// GitHub mints a session's credentials. They never mix: the sandbox
 // token reaches the sandbox (through the git credential helper) and
-// nothing else; the worker host's token stays in the worker.
+// nothing else; the worker host's token and the push tokens stay in the
+// worker.
 type GitHub interface {
-	// SandboxTokens returns a source of sandbox tokens: contents: write on
-	// exactly repos (owner/name).
+	// SandboxTokens returns a source of sandbox tokens: contents: read on
+	// exactly repos (owner/name), for clone and fetch.
 	SandboxTokens(installationID int64, repos []string) (TokenSource, error)
+	// PushTokens returns a source of push tokens: contents: write on
+	// exactly repos. The worker uses one per push, for one repo, outside
+	// the sandbox, and revokes it when the push returns.
+	PushTokens(installationID int64, repos []string) (TokenSource, error)
 	// WorkerHost returns the RepoHost behind read_issue and open_pr, with
 	// WorkerPermissions on repos, and its token source to revoke when the
 	// session parks.
@@ -95,6 +100,10 @@ func (a appGitHub) SandboxTokens(installationID int64, repos []string) (TokenSou
 	return github.NewTokenSource(a.app, installationID, repos, github.SandboxPermissions)
 }
 
+func (a appGitHub) PushTokens(installationID int64, repos []string) (TokenSource, error) {
+	return github.NewTokenSource(a.app, installationID, repos, github.PushPermissions)
+}
+
 func (a appGitHub) WorkerHost(installationID int64, repos []string) (agent.RepoHost, TokenSource, error) {
 	ts, err := github.NewTokenSource(a.app, installationID, repos, github.WorkerPermissions)
 	if err != nil {
@@ -104,9 +113,10 @@ func (a appGitHub) WorkerHost(installationID int64, repos []string) (agent.RepoH
 }
 
 // NewPATGitHub returns a GitHub that uses one personal access token for
-// both the sandbox (clone and push, through the same credential helper
-// file) and the worker host, for `keith run --local`. installationID is
-// ignored.
+// the sandbox (clone and fetch, through the same credential helper file),
+// the worker's pushes and the worker host, for `keith run --local`.
+// installationID is ignored. A token cannot be made read-only, so in a
+// local run the sandbox could push with it too.
 func NewPATGitHub(token string, opts github.PATHostOptions) GitHub {
 	return patGitHub{token: token, opts: opts}
 }
@@ -121,6 +131,10 @@ func (p patGitHub) SandboxTokens(_ int64, repos []string) (TokenSource, error) {
 		return nil, errors.New("worker: empty GitHub token")
 	}
 	return NewStaticTokenSource(p.token), nil
+}
+
+func (p patGitHub) PushTokens(_ int64, repos []string) (TokenSource, error) {
+	return p.SandboxTokens(0, repos)
 }
 
 func (p patGitHub) WorkerHost(_ int64, repos []string) (agent.RepoHost, TokenSource, error) {

@@ -287,9 +287,48 @@ func localHandler(spec sandbox.Spec) memsandbox.Handler {
 			return ok("origin/main\n")
 		case c == "git rev-parse --abbrev-ref HEAD":
 			return ok(branch + "\n")
+		case strings.Contains(c, "git bundle create"):
+			// The worker's push script; the fake remote needs no objects.
+			return ok("tip=" + localTip + "\nlease=\nmode=empty\n")
+		case strings.Contains(c, "git push"):
+			return &sandbox.ExecResult{ExitCode: 1, Stderr: "the sandbox must not push"}, nil
 		}
 		return ok("")
 	}
+}
+
+// localTip is the fake sandbox branch's commit.
+const localTip = "1234567890abcdef1234567890abcdef12345678"
+
+// fakeRemote is where a local run pushes: it records each update and
+// the token it came with.
+type fakeRemote struct {
+	mu      sync.Mutex
+	tokens  []string
+	updates []github.RefUpdate
+}
+
+func (f *fakeRemote) open(_ context.Context, repo, token string) (worker.PushRemote, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokens = append(f.tokens, token)
+	return fakePush{f}, nil
+}
+
+type fakePush struct{ f *fakeRemote }
+
+func (fakePush) Ref(name string) string {
+	if name == "refs/heads/main" {
+		return "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+	}
+	return ""
+}
+
+func (p fakePush) Update(_ context.Context, u github.RefUpdate, _ []byte) error {
+	p.f.mu.Lock()
+	defer p.f.mu.Unlock()
+	p.f.updates = append(p.f.updates, u)
+	return nil
 }
 
 type testShells struct{ *agenttest.Shells }
@@ -358,6 +397,7 @@ type localFixture struct {
 	sbx  *snapProvider
 	llm  *llmtest.Provider
 	gh   *fakeGitHubAPI
+	git  *fakeRemote
 	plan runPlan
 	deps localDeps
 	run  *localRun
@@ -381,7 +421,7 @@ func newFixture(t *testing.T, o runOptions) *localFixture {
 		t.Fatal(err)
 	}
 	plan.Options.CancelPoll = 20 * time.Millisecond
-	f := &localFixture{t: t, sbx: &snapProvider{Provider: memsandbox.NewProvider()}, llm: llmtest.New(), gh: newFakeGitHubAPI(t), plan: plan, out: &syncBuffer{}}
+	f := &localFixture{t: t, sbx: &snapProvider{Provider: memsandbox.NewProvider()}, llm: llmtest.New(), gh: newFakeGitHubAPI(t), git: &fakeRemote{}, plan: plan, out: &syncBuffer{}}
 	f.sbx.NewHandler = localHandler
 	f.deps = localDeps{
 		Sandboxes: f.sbx,
@@ -392,6 +432,7 @@ func newFixture(t *testing.T, o runOptions) *localFixture {
 			return f.llm, nil
 		},
 		GitHub:    worker.NewPATGitHub(token, github.PATHostOptions{APIBaseURL: f.gh.srv.URL + "/", HTTPClient: f.gh.srv.Client()}),
+		GitPush:   f.git.open,
 		NewShells: newTestShells,
 		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -493,6 +534,19 @@ func TestLocalRunShipsAndPrintsDiff(t *testing.T) {
 	for _, c := range sb.Calls() {
 		if c.Op == memsandbox.OpSnapshot {
 			t.Error("a local run snapshotted its sandbox")
+		}
+	}
+	// keith pushed the session branch itself, with the PAT; the sandbox
+	// ran no git push.
+	f.git.mu.Lock()
+	if len(f.git.updates) != 1 || f.git.updates[0] != (github.RefUpdate{Ref: "refs/heads/agent/" + id, New: localTip}) ||
+		len(f.git.tokens) != 1 || f.git.tokens[0] != testPAT {
+		t.Errorf("pushes = %+v (%d tokens)", f.git.updates, len(f.git.tokens))
+	}
+	f.git.mu.Unlock()
+	for _, r := range sb.ExecRequests() {
+		if strings.Contains(r.Cmd, "git push") || strings.Contains(r.Cmd, testPAT) {
+			t.Errorf("sandbox command %q", r.Cmd)
 		}
 	}
 	f.gh.mu.Lock()

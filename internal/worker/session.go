@@ -70,12 +70,15 @@ type session struct {
 	// sharedShells publishes shells to the stop watcher goroutine.
 	sharedShells atomic.Pointer[Shells]
 	sbTokens     TokenSource
-	host         agent.RepoHost
-	hostTokens   TokenSource
-	tokenStop    context.CancelFunc
-	tokenDone    chan struct{}
-	tokenFile    *tokenFile
-	issue        *issueRef
+	// installationID is the session's GitHub App installation (push
+	// tokens are minted on it).
+	installationID int64
+	host           agent.RepoHost
+	hostTokens     TokenSource
+	tokenStop      context.CancelFunc
+	tokenDone      chan struct{}
+	tokenFile      *tokenFile
+	issue          *issueRef
 
 	prov     llm.Provider
 	state    *agent.State
@@ -102,6 +105,11 @@ type session struct {
 
 	synthMu sync.Mutex
 	synth   map[string]string // shell -> synthetic call ID
+
+	// pushed is the tip this task last pushed, per repo: a remote branch
+	// still there may be updated even if the sandbox's lease is stale.
+	pushMu sync.Mutex
+	pushed map[string]string
 }
 
 // repoState is one session repo as the worker sees it.

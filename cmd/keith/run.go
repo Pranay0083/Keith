@@ -88,8 +88,12 @@ Only --local is supported for now; use the web app or the API for cloud runs.
 Environment:
   GITHUB_TOKEN        required: a personal access token with Contents (read and
                       write) and Pull requests (read and write) on the repo.
-                      It reaches the sandbox only through the git credential
-                      helper's token file and is never printed.
+                      keith pushes the session branch itself, from this
+                      process. The sandbox gets the token only through the
+                      git credential helper's token file, to clone and fetch;
+                      it is never printed. A token cannot be made read-only
+                      for the sandbox, so prefer a fine-grained token limited
+                      to this repo.
   ANTHROPIC_API_KEY   or GEMINI_API_KEY, for the chosen --provider.
   DEFAULT_LLM_PROVIDER, DEFAULT_MODEL, DEFAULT_GEMINI_MODEL, SANDBOX_TEMPLATE,
   MAX_SESSION_DURATION, MAX_SESSION_TOKENS, GIT_BASE_URL: as for keith worker.
@@ -262,6 +266,9 @@ type localDeps struct {
 	Sandboxes sandbox.Provider
 	LLM       func(provider string) (llm.Provider, error)
 	GitHub    worker.GitHub
+	// GitPush is nil for pushing to GIT_BASE_URL over git's smart HTTP
+	// protocol, from this process (never from the sandbox).
+	GitPush worker.GitPusher
 	// NewShells is nil for tmux shells.
 	NewShells worker.ShellsFactory
 	Logger    *slog.Logger
@@ -289,7 +296,7 @@ func newLocalRun(plan runPlan, d localDeps) (*localRun, error) {
 	}
 	w, err := worker.New(worker.Deps{
 		Store: r.ms, Events: r.evs, Bus: r.bus, Leases: worker.NewMemLeaser(), Control: r.ctl,
-		Sandboxes: d.Sandboxes, GitHub: d.GitHub, LLM: d.LLM, NewShells: d.NewShells, Logger: d.Logger,
+		Sandboxes: d.Sandboxes, GitHub: d.GitHub, GitPush: d.GitPush, LLM: d.LLM, NewShells: d.NewShells, Logger: d.Logger,
 	}, plan.Options)
 	if err != nil {
 		return nil, err
