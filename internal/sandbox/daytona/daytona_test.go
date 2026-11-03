@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
+	"log/slog"
 	osexec "os/exec"
 	"path/filepath"
 	"slices"
@@ -658,6 +660,117 @@ func TestReadFileLimits(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the endless download is still being read (%d bytes)", n2)
+		}
+	}
+}
+
+// Regression: when the log stream was unavailable, Exec fetched the
+// command's whole logs with GetSessionCommandLogs, which the SDK reads
+// into memory, so a command printing without end (or a huge output) could
+// exhaust the worker's memory. Command-output responses are now capped:
+// past the cap the fetch fails and Exec keeps what it streamed.
+func TestCommandOutputResponsesAreCapped(t *testing.T) {
+	shortTimings(t)
+	old := maxOutputResponse
+	maxOutputResponse = 64 << 10
+	t.Cleanup(func() { maxOutputResponse = old })
+
+	f := newFake(t)
+	f.wsMode = "fail"
+	f.runner = func(cmd string) fakeRun {
+		if strings.Contains(cmd, "endless") {
+			return fakeRun{endlessLogs: true, exit: 3}
+		}
+		return fakeRun{stdout: strings.Repeat("x", 1000), exit: 0}
+	}
+	f.addSandbox("sb-1", "started")
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	p := f.provider(Options{Logger: slog.New(slog.NewTextHandler(&syncWriter{w: &logs, mu: &logMu}, nil))})
+	sb, err := p.Get(ctxT(t), "sb-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Output under the cap is still filled from the logs.
+	res, err := sb.Exec(ctxT(t), sandbox.ExecRequest{Cmd: "small"}, nil)
+	if err != nil || res.Stdout != strings.Repeat("x", 1000) {
+		t.Fatalf("small Exec = %+v, %v", res, err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		res, err = sb.Exec(ctxT(t), sandbox.ExecRequest{Cmd: "endless"}, nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("Exec with endless logs did not return")
+	}
+	if err != nil || res.ExitCode != 3 || res.Stdout != "" {
+		t.Fatalf("endless Exec = %+v, %v", res, err)
+	}
+	logMu.Lock()
+	warned := strings.Contains(logs.String(), "too large")
+	logMu.Unlock()
+	if !warned {
+		t.Errorf("no warning about the logs being too large: %s", logs.String())
+	}
+
+	// /process/execute (the read check, workspace setup) is capped too.
+	ds := sb.(*daytonaSandbox)
+	if _, err := ds.sb.Process.ExecuteCommand(ctxT(t), "ENDLESS"); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("ExecuteCommand with an endless response = %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	f.read(func() {
+		if f.endlessOut > 64<<20 {
+			t.Errorf("the endless responses wrote %d bytes", f.endlessOut)
+		}
+	})
+}
+
+type syncWriter struct {
+	w  io.Writer
+	mu *sync.Mutex
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+func TestCappedBody(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		max     int64
+		wantErr bool
+	}{
+		{"12345", 5, false},
+		{"12345", 10, false},
+		{"123456", 5, true},
+	} {
+		b := &cappedBody{rc: io.NopCloser(strings.NewReader(tc.body)), left: tc.max}
+		got, err := io.ReadAll(b)
+		if (err != nil) != tc.wantErr || (!tc.wantErr && string(got) != tc.body) {
+			t.Errorf("%q with max %d = %q, %v", tc.body, tc.max, got, err)
+		}
+		if tc.wantErr && (!errors.Is(err, errResponseTooLarge) || int64(len(got)) > tc.max) {
+			t.Errorf("%q with max %d = %q, %v", tc.body, tc.max, got, err)
+		}
+	}
+	for path, want := range map[string]bool{
+		"/toolbox/sb-1/process/execute":                         true,
+		"/toolbox/sb-1/process/session/s1/command/c1/logs":      true,
+		"/toolbox/sb-1/process/session/s1/command/c1":           false,
+		"/toolbox/sb-1/files/bulk-download":                     false,
+		"/api/sandbox/sb-1":                                     false,
+		"/toolbox/sb-1/process/session/s1/command/c1/logs/more": false,
+	} {
+		if got := carriesOutput(path); got != want {
+			t.Errorf("carriesOutput(%s) = %v", path, got)
 		}
 	}
 }

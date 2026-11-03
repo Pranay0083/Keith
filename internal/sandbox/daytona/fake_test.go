@@ -28,6 +28,7 @@ type fakeRun struct {
 	stdout, stderr string
 	exit           int
 	hang           bool // never report an exit code
+	endlessLogs    bool // GET .../logs streams output forever
 }
 
 type fakeCommand struct {
@@ -73,6 +74,7 @@ type fakeDaytona struct {
 	snapshots   map[string]*fakeSnapshot
 	previewQS   []string
 	downloaded  int64 // bytes of endless downloads written
+	endlessOut  int64 // bytes of endless command output written
 	closed      chan struct{}
 }
 
@@ -341,6 +343,10 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 		f.executes = append(f.executes, body.Command)
 		exit := f.readCheck(body.Command)
 		f.mu.Unlock()
+		if body.Command == "ENDLESS" {
+			f.endless(w, `{"exitCode":0,"result":"`)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"exitCode": exit, "result": ""})
 
 	case p == "/process/session" && r.Method == http.MethodPost:
@@ -405,6 +411,10 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 			return
 		}
 		if !websocket.IsWebSocketUpgrade(r) {
+			if cmd.run.endlessLogs {
+				f.endless(w, `{"output":"`)
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"output": cmd.run.stdout + cmd.run.stderr, "stdout": cmd.run.stdout, "stderr": cmd.run.stderr,
 			})
@@ -498,6 +508,24 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// endless writes a 200 JSON response that starts with prefix and never
+// ends, until the client goes away, counting the bytes in f.endlessOut.
+func (f *fakeDaytona) endless(w http.ResponseWriter, prefix string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, prefix)
+	chunk := []byte(strings.Repeat("y\\n", 8<<10))
+	for {
+		n, err := w.Write(chunk)
+		f.mu.Lock()
+		f.endlessOut += int64(n)
+		f.mu.Unlock()
+		if err != nil {
+			return
+		}
 	}
 }
 

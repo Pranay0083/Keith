@@ -64,7 +64,10 @@
 // with ExecRequest.Env set), streams stdout and stderr over the toolbox's
 // log WebSocket, and reads the exit code from the session. If the stream is
 // unavailable the full output is fetched when the command ends and passed
-// to onOutput in one piece. A timed-out command is stopped by deleting its
+// to onOutput in one piece; responses that carry command output are capped
+// at 16 MiB (maxOutputResponse), and past that the fetch is given up and a
+// warning logged, so a command that prints without end can't exhaust the
+// worker's memory. A timed-out command is stopped by deleting its
 // session. Sessions are deleted after every command, so the per-command env
 // does not linger in the daemon's session history.
 //
@@ -100,6 +103,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -210,6 +214,7 @@ func New(opts Options) (*Provider, error) {
 	if hc == nil {
 		hc = defaultHTTPClient()
 	}
+	hc = limitOutputs(hc)
 	polling := true
 	client, err := sdk.NewClientWithConfig(&sdktypes.DaytonaConfig{
 		APIKey:     opts.APIKey,
@@ -512,6 +517,71 @@ func defaultHTTPClient() *http.Client {
 	tr.ResponseHeaderTimeout = responseHeaderTimeout
 	return &http.Client{Transport: tr}
 }
+
+// maxOutputResponse bounds the body of a toolbox response that carries a
+// command's output: /process/execute and a session command's logs. The
+// SDK reads those whole into memory, and a command can print without
+// limit, so a larger response fails the call instead (Exec then keeps the
+// output it streamed). A variable so tests can lower it.
+var maxOutputResponse int64 = 16 << 20
+
+// errResponseTooLarge: a command-output response was over
+// maxOutputResponse.
+var errResponseTooLarge = errors.New("daytona: command output response too large")
+
+// limitOutputs returns a copy of hc whose transport caps command-output
+// responses at maxOutputResponse.
+func limitOutputs(hc *http.Client) *http.Client {
+	c := *hc
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.Transport = limitOutputTransport{base: base}
+	return &c
+}
+
+type limitOutputTransport struct{ base http.RoundTripper }
+
+func (t limitOutputTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(r)
+	if err != nil || resp.StatusCode == http.StatusSwitchingProtocols || !carriesOutput(r.URL.Path) {
+		return resp, err
+	}
+	resp.Body = &cappedBody{rc: resp.Body, left: maxOutputResponse}
+	return resp, nil
+}
+
+// carriesOutput reports whether a toolbox path returns command output.
+func carriesOutput(p string) bool {
+	return strings.HasSuffix(p, "/process/execute") ||
+		(strings.Contains(p, "/process/session/") && strings.HasSuffix(p, "/logs"))
+}
+
+// cappedBody fails with errResponseTooLarge once more than left bytes
+// arrive.
+type cappedBody struct {
+	rc   io.ReadCloser
+	left int64
+}
+
+func (b *cappedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		var one [1]byte
+		if n, err := b.rc.Read(one[:]); n == 0 {
+			return 0, err // the body ended exactly at the limit (or failed)
+		}
+		return 0, errResponseTooLarge
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.rc.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *cappedBody) Close() error { return b.rc.Close() }
 
 func randomHex(n int) string {
 	b := make([]byte, n)
