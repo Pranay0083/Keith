@@ -291,3 +291,90 @@ func TestDockerReadFileRefusesSpecialFiles(t *testing.T) {
 		t.Errorf("ReadFileLimit(3 bytes, limit 2) = %v; want ErrFileTooLarge", err)
 	}
 }
+
+// plantScript is put in ~/.local/bin under the names of the binaries the
+// provider's and the worker's root execs use. Each copy records who ran
+// it, then runs the real binary.
+const plantScript = `#!/bin/sh
+n=${0##*/}
+: > "/tmp/pwned.$(/usr/bin/id -u).$n" 2>/dev/null
+PATH=/usr/sbin:/usr/bin:/sbin:/bin exec "$n" "$@"
+`
+
+// Regression: with ~/.local/bin (writable by the agent) first in PATH, a
+// planted ~/.local/bin/kill ran as root when an exec timed out, and so did
+// planted copies of the tools in the worker's root setup script. Root
+// execs now use /bin/sh and sandbox.SystemPath, and the container keeps
+// only CHOWN and KILL.
+func TestDockerRootExecIgnoresPlantedBinaries(t *testing.T) {
+	p := sbtest.DockerProvider(t)
+	ctx := context.Background()
+	// The worst case: the sandbox's own PATH puts the agent's directory
+	// first (as base.Dockerfile used to).
+	sb := sbtest.Sandbox(t, p, sandbox.Spec{Env: map[string]string{
+		"PATH": "/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}})
+	names := []string{"kill", "sh", "id", "printf", "base64", "chown", "chmod", "install", "mkdir", "cat", "head", "stat", "rm"}
+	if err := sb.WriteFile(ctx, "/home/agent/.local/bin/plant", []byte(plantScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setup := "cd /home/agent/.local/bin && for n in " + strings.Join(names, " ") + "; do ln -sf plant $n; done && " +
+		// so root could reach them even without DAC_OVERRIDE:
+		"/usr/bin/chmod 755 /home/agent /home/agent/.local /home/agent/.local/bin"
+	if res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: setup}, nil); err != nil || res.ExitCode != 0 {
+		t.Fatalf("plant: %+v, %v", res, err)
+	}
+	// The plant works for the agent's own commands.
+	if res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "id -u"}, nil); err != nil || res.Stdout != "1000\n" {
+		t.Fatalf("id as the agent: %+v, %v", res, err)
+	}
+	pwned := func() string {
+		t.Helper()
+		res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "cd /tmp && echo pwned.*"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(res.Stdout)
+	}
+	if got := pwned(); got != "pwned.1000.id" {
+		t.Fatalf("plant markers after the agent's id = %q", got)
+	}
+
+	// A timed-out command's process group is killed from a root exec.
+	res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "sleep 300", Timeout: time.Second}, nil)
+	if err != nil || !res.TimedOut {
+		t.Fatalf("timeout: %+v, %v", res, err)
+	}
+	if res, _ := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "ps -eo args | grep -c '^[s]leep 300' || true"}, nil); strings.TrimSpace(res.Stdout) != "0" {
+		t.Fatalf("sleep survived the timeout kill: %q", res.Stdout)
+	}
+
+	// The worker's root setup script (the credential helper install) still
+	// works with only CHOWN and KILL, and uses no planted binary.
+	root := `set -e
+printf %s aGk= | base64 -d > /usr/local/bin/git-credential-test
+chown 0:0 /usr/local/bin/git-credential-test
+chmod 0755 /usr/local/bin/git-credential-test
+install -d -m 0700 -o 1000 -g 1000 /run/keith-test
+id -u; cat /usr/local/bin/git-credential-test; echo; stat -c '%U %a' /run/keith-test`
+	res, err = sb.Exec(ctx, sandbox.ExecRequest{Cmd: root, Dir: "/", User: "root", Timeout: time.Minute,
+		Env: map[string]string{"PATH": "/home/agent/.local/bin:/usr/bin:/bin"}}, nil)
+	if err != nil || res.ExitCode != 0 || res.Stdout != "0\nhi\nagent 700\n" {
+		t.Fatalf("root setup: %+v, %v", res, err)
+	}
+	if got := pwned(); got != "pwned.1000.id" {
+		t.Fatalf("a planted binary ran as root: %q", got)
+	}
+
+	// Root has only CHOWN and KILL: it can't read the agent's private file
+	// (no DAC_OVERRIDE) or make device nodes (no MKNOD).
+	res, err = sb.Exec(ctx, sandbox.ExecRequest{Cmd: "umask 077 && echo private > /home/agent/secret"}, nil)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("write secret: %+v, %v", res, err)
+	}
+	res, err = sb.Exec(ctx, sandbox.ExecRequest{User: "root", Dir: "/", Cmd: `grep CapBnd /proc/self/status; ` +
+		`cat /home/agent/secret 2>/dev/null && echo read-secret; mknod /tmp/dev c 1 3 2>/dev/null && echo made-device; true`}, nil)
+	if err != nil || res.Stdout != "CapBnd:\t0000000000000021\n" {
+		t.Fatalf("root's capabilities: %+v, %v", res, err)
+	}
+}

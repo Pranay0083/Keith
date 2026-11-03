@@ -2,11 +2,15 @@ package docker
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The test binary doubles as a fake docker CLI: with KEITH_FAKE_DOCKER set
@@ -29,13 +33,30 @@ type fakeCall struct {
 //
 //   - exec running readScript: prints zeros forever when the mode file
 //     says "zeros" (a subverted head), else nothing;
+//   - exec running execWrapper: prints the wrapper's PID line; in mode
+//     "hang" it then sleeps until a kill exec (below) kills it;
+//   - exec running the kill script: kills the hanging exec, if any;
 //   - anything else: exits 0.
 func fakeDocker(dir string, args []string) int {
 	logCall(dir, fakeCall{Args: args, Env: os.Environ()})
 	mode, _ := os.ReadFile(filepath.Join(dir, "mode"))
 
+	isExec := len(args) > 0 && args[0] == "exec"
 	switch {
-	case len(args) > 0 && args[0] == "exec" && slices.Contains(args, readScript):
+	case isExec && slices.Contains(args, execWrapper):
+		fmt.Fprintf(os.Stderr, "%s%d\n", pidPrefix, os.Getpid())
+		if strings.TrimSpace(string(mode)) == "hang" {
+			_ = os.WriteFile(filepath.Join(dir, "hang.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+			time.Sleep(time.Minute)
+			return 1
+		}
+	case isExec && slices.Contains(args, killScript):
+		if b, err := os.ReadFile(filepath.Join(dir, "hang.pid")); err == nil {
+			if pid, err := strconv.Atoi(string(b)); err == nil {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	case isExec && slices.Contains(args, readScript):
 		if strings.TrimSpace(string(mode)) == "zeros" {
 			buf := make([]byte, 64<<10)
 			for {

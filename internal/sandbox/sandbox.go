@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,18 @@ const MaxExecOutput = 1 << 20
 // MaxReadFile is the most bytes Sandbox.ReadFile returns; larger files
 // fail with ErrFileTooLarge. Sandbox.ReadFileLimit takes its own limit.
 const MaxReadFile = 64 << 20
+
+// SystemPath is the PATH providers give every command they run as root,
+// and their own helper scripts, so nothing in a directory the sandbox
+// user can write (such as ~/.local/bin) runs in their place.
+const SystemPath = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+// IsRoot reports whether an ExecRequest.User names root ("root" or "0",
+// optionally with a ":group").
+func IsRoot(user string) bool {
+	u, _, _ := strings.Cut(user, ":")
+	return u == "root" || u == "0"
+}
 
 var (
 	// ErrFileTooLarge: ReadFile or ReadFileLimit was given a file larger
@@ -86,7 +99,9 @@ type ExecRequest struct {
 	// beyond ctx.
 	Timeout time.Duration
 	// User runs the command as this user; empty means the sandbox's
-	// default non-root user.
+	// default non-root user. A command run as root gets PATH=SystemPath,
+	// whatever the sandbox's environment or Env says, so call binaries by
+	// name only if they are in a system directory.
 	User string
 }
 

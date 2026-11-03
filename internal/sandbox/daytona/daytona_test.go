@@ -46,6 +46,28 @@ func TestBuildCommandRunsInSh(t *testing.T) {
 	}
 }
 
+// A root command runs with sandbox.SystemPath even if the sandbox's own
+// PATH or the request's Env puts a user-writable directory first.
+func TestBuildCommandRootPath(t *testing.T) {
+	if _, err := osexec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	s := &daytonaSandbox{user: "root"} // root by default, so no sudo here
+	cmd, err := s.buildCommand(sandbox.ExecRequest{
+		Cmd: `echo "$PATH"`, Dir: t.TempDir(), User: "root",
+		Env: map[string]string{"PATH": "/home/agent/.local/bin:/usr/bin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := osexec.Command("sh", "-c", cmd)
+	c.Env = []string{"PATH=/home/agent/.local/bin:/usr/bin:/bin"}
+	out, err := c.CombinedOutput()
+	if err != nil || string(out) != sandbox.SystemPath+"\n" {
+		t.Fatalf("PATH in a root command = %q, %v", out, err)
+	}
+}
+
 func ctxT(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -299,8 +321,8 @@ func TestExecStreams(t *testing.T) {
 	}
 
 	cmd := f.lastCommand()
-	inner := "cd " + sbutil.Quote("/workspace/sub") + " && FOO=" + sbutil.Quote("bar baz") + " sh -c " + sbutil.Quote("echo 'hi'")
-	if want := "sh -c " + sbutil.Quote(inner) + " < /dev/null"; cmd.command != want {
+	inner := "cd " + sbutil.Quote("/workspace/sub") + " && FOO=" + sbutil.Quote("bar baz") + " /bin/sh -c " + sbutil.Quote("echo 'hi'")
+	if want := "/bin/sh -c " + sbutil.Quote(inner) + " < /dev/null"; cmd.command != want {
 		t.Errorf("command =\n %s\nwant\n %s", cmd.command, want)
 	}
 	if !f.sessionDeleted(cmd.session) {
@@ -418,14 +440,17 @@ func TestExecUserAndEnv(t *testing.T) {
 	if _, err := sb.Exec(ctxT(t), sandbox.ExecRequest{Cmd: "id", User: "root"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if c := f.lastCommand().command; !strings.HasPrefix(c, "sudo -n -E -H -u 'root' -- sh -c ") {
+	// Regression: a root command must not look up sudo, sh or anything it
+	// runs in a PATH the sandbox user can write to.
+	if c := f.lastCommand().command; !strings.HasPrefix(c, "/usr/bin/sudo -n -E -H -u 'root' -- /bin/sh -c ") ||
+		!strings.Contains(c, "PATH="+sandbox.SystemPath+" /bin/sh -c ") {
 		t.Errorf("root command = %s", c)
 	}
 	if _, err := sb.Exec(ctxT(t), sandbox.ExecRequest{Cmd: "id", User: "daytona"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if c := f.lastCommand().command; strings.Contains(c, "sudo") {
-		t.Errorf("default-user command uses sudo: %s", c)
+	if c := f.lastCommand().command; strings.Contains(c, "sudo") || strings.Contains(c, "PATH=") {
+		t.Errorf("default-user command uses sudo or sets PATH: %s", c)
 	}
 	if _, err := sb.Exec(ctxT(t), sandbox.ExecRequest{Cmd: "id", Env: map[string]string{"BAD-NAME": "x"}}, nil); err == nil {
 		t.Error("invalid env name: want error")

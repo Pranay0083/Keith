@@ -76,6 +76,7 @@ The sandbox is untrusted. It runs whatever the repo and the agent run, and users
 - The worker runs every tool call. Shell and file tools become sandbox calls. `read_issue`, `open_pr`, `message_user` and `ask_user` run in the worker with credentials that never reach the sandbox.
 - The agent pushes only to `agent/*` branches. Sandbox egress is allowlisted on Daytona (GitHub and the common package registries); the local docker provider does not enforce it. The agent runs as a non-root user.
 - Org and repo secrets are encrypted at rest (envelope encryption under `SECRETS_KEY`) and redacted from every event.
+- Root in the sandbox: the providers run every root command (their own, and the worker's setup) with `/bin/sh` and `PATH=/usr/sbin:/usr/bin:/sbin:/bin` (`sandbox.SystemPath`), so nothing the agent writes, such as `~/.local/bin/kill`, runs as root. Docker sandboxes drop every capability except `CHOWN` and `KILL` and set `no-new-privileges`. In Daytona's own snapshots the default user has passwordless sudo, so there the sandbox user is effectively root.
 - In V1 the GitHub token service is a library (`internal/github`) that the API and worker both call in-process, so both control-plane services hold the App private key. Moving it into its own service is a later hardening step.
 
 ## Event log is the source of truth

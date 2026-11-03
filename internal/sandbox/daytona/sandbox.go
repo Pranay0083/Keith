@@ -47,11 +47,12 @@ func (s *daytonaSandbox) ID() string { return s.id }
 
 // workspaceScript creates sandbox.WorkspaceDir and makes it writable by the
 // default user, using passwordless sudo where the user cannot do it alone.
+// It runs with PATH=sandbox.SystemPath.
 var workspaceScript = fmt.Sprintf(
-	`d=%[1]s; mkdir -p "$d" 2>/dev/null || sudo -n mkdir -p "$d"; `+
+	`PATH=%[2]s; d=%[1]s; mkdir -p "$d" 2>/dev/null || sudo -n mkdir -p "$d"; `+
 		`if [ ! -w "$d" ]; then sudo -n chown "$(id -u):$(id -g)" "$d"; fi; `+
 		`test -d "$d" && test -w "$d"`,
-	sbutil.Quote(sandbox.WorkspaceDir))
+	sbutil.Quote(sandbox.WorkspaceDir), sandbox.SystemPath)
 
 func (s *daytonaSandbox) prepareWorkspace(ctx context.Context) error {
 	res, err := s.sb.Process.ExecuteCommand(ctx, workspaceScript, sdkoptions.WithExecuteTimeout(time.Minute))
@@ -84,12 +85,13 @@ const (
 
 // readCheckScript exits 0 if abs is a regular file (symlinks followed) of
 // at most limit bytes, and with one of the read* codes otherwise. It
-// prints nothing, so its response stays small.
+// prints nothing, so its response stays small, and runs with
+// PATH=sandbox.SystemPath.
 func readCheckScript(abs string, limit int64) string {
-	script := fmt.Sprintf(`p=%s; [ -e "$p" ] || exit %d; [ -d "$p" ] && exit %d; [ -f "$p" ] || exit %d; `+
+	script := fmt.Sprintf(`PATH=%s; p=%s; [ -e "$p" ] || exit %d; [ -d "$p" ] && exit %d; [ -f "$p" ] || exit %d; `+
 		`s=$(stat -L -c %%s -- "$p" 2>/dev/null) && [ "$s" -gt %d ] && exit %d; exit 0`,
-		sbutil.Quote(abs), readNoFile, readIsDir, readNotRegular, limit, readTooLarge)
-	return "sh -c " + sbutil.Quote(script) + " < /dev/null > /dev/null 2>&1"
+		sandbox.SystemPath, sbutil.Quote(abs), readNoFile, readIsDir, readNotRegular, limit, readTooLarge)
+	return "/bin/sh -c " + sbutil.Quote(script) + " < /dev/null > /dev/null 2>&1"
 }
 
 // ReadFileLimit checks the file with a command, then downloads it with

@@ -5,8 +5,10 @@
 //
 // A sandbox is a long-lived container ("keith-sb-<random>") running an
 // idle loop as the image's non-root user, with CPU, memory and PID limits,
-// the label keith.sandbox=1 and a fixed set of container ports published
-// on random 127.0.0.1 host ports (Options.Ports), which PortURL reports.
+// no capabilities but CHOWN and KILL, no-new-privileges, the label
+// keith.sandbox=1 and a fixed set of container ports published on random
+// 127.0.0.1 host ports (Options.Ports), which PortURL reports. Commands
+// run as root get PATH=sandbox.SystemPath.
 // Exec is `docker exec`; files move through exec with stdin and stdout, so
 // they are owned by the sandbox user and large files stream (reads are
 // checked in the sandbox and capped, see ReadFileLimit). Pause and
@@ -252,6 +254,13 @@ func envArgs(env map[string]string) (args, vars []string, err error) {
 	return args, vars, nil
 }
 
+// rootCaps are the only capabilities a sandbox keeps (--cap-drop ALL
+// drops the rest): CHOWN for the worker's root setup (install -o, chown)
+// and KILL so a timed-out command's process group, which runs as the
+// sandbox user, can be killed from a root exec. The sandbox user itself
+// has no capabilities, and no-new-privileges stops it gaining any.
+var rootCaps = []string{"CHOWN", "KILL"}
+
 // idleScript keeps the container alive and exits promptly on SIGTERM.
 const idleScript = `trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done`
 
@@ -288,6 +297,10 @@ func (p *Provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 		"--memory", strconv.Itoa(mem) + "m", "--memory-swap", strconv.Itoa(mem) + "m",
 		"--pids-limit", strconv.Itoa(DefaultPidsLimit),
 		"--security-opt", "no-new-privileges:true",
+		"--cap-drop", "ALL",
+	}
+	for _, c := range rootCaps {
+		args = append(args, "--cap-add", c)
 	}
 	for _, k := range slices.Sorted(maps.Keys(p.opts.Labels)) {
 		args = append(args, "--label", k+"="+p.opts.Labels[k])
@@ -374,7 +387,32 @@ const pidPrefix = "__KEITH_PID="
 
 // execWrapper records the process ID (docker exec processes lead their own
 // session and process group), then replaces itself with `sh -c CMD`.
-const execWrapper = `printf '` + pidPrefix + `%s\n' "$$" >&2; exec sh -c "$1"`
+const execWrapper = `printf '` + pidPrefix + `%s\n' "$$" >&2; exec /bin/sh -c "$1"`
+
+// execArgs is the docker CLI argv for Exec. Every shell is /bin/sh, not
+// one found by PATH, and a root command gets PATH=sandbox.SystemPath so
+// nothing the sandbox user planted (in ~/.local/bin, say) runs as root.
+func (s *Sandbox) execArgs(req sandbox.ExecRequest, dir string, envFlags []string) []string {
+	args := []string{"exec", "-w", dir}
+	if req.User != "" {
+		args = append(args, "-u", req.User)
+	}
+	args = append(args, envFlags...)
+	if sandbox.IsRoot(req.User) {
+		args = append(args, "-e", "PATH="+sandbox.SystemPath) // after envFlags, so it wins
+	}
+	return append(args, s.id, "/bin/sh", "-c", execWrapper, "sh", req.Cmd)
+}
+
+// killScript kills process group $1 with the shell's builtin kill (dash's
+// takes no "--"), so no kill binary is looked up.
+const killScript = `kill -KILL "-$1"`
+
+// killArgs is the docker CLI argv that kills process group pgid as root.
+func (s *Sandbox) killArgs(pgid int) []string {
+	return []string{"exec", "-u", "0", "-e", "PATH=" + sandbox.SystemPath, s.id,
+		"/bin/sh", "-c", killScript, "sh", strconv.Itoa(pgid)}
+}
 
 // Exec implements sandbox.Sandbox. On Timeout (or ctx cancellation) the
 // command's whole process group is killed inside the container.
@@ -387,14 +425,7 @@ func (s *Sandbox) Exec(ctx context.Context, req sandbox.ExecRequest, onOutput fu
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"exec", "-w", dir}
-	if req.User != "" {
-		args = append(args, "-u", req.User)
-	}
-	args = append(args, envFlags...)
-	args = append(args, s.id, "sh", "-c", execWrapper, "sh", req.Cmd)
-
-	cmd := exec.Command(s.p.opts.Docker, args...)
+	cmd := exec.Command(s.p.opts.Docker, s.execArgs(req, dir, envFlags)...)
 	cmd.Env = append(os.Environ(), envVars...)
 
 	// One goroutine delivers chunks to onOutput, in arrival order.
@@ -449,7 +480,7 @@ func (s *Sandbox) Exec(ctx context.Context, req sandbox.ExecRequest, onOutput fu
 		}
 		if pid > 0 {
 			kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			_, _ = s.p.run(kctx, nil, nil, "exec", "-u", "0", s.id, "kill", "-KILL", "--", "-"+strconv.Itoa(pid))
+			_, _ = s.p.run(kctx, nil, nil, s.killArgs(pid)...)
 			cancel()
 		}
 		select {
@@ -560,15 +591,16 @@ const (
 	exitTooLarge   = 47
 )
 
-// fileOp runs a file script in the sandbox with the resolved path as $1
-// and extra as $2..., keeping at most limit bytes of its output.
+// fileOp runs a file script in the sandbox, as the default user with
+// PATH=sandbox.SystemPath, with the resolved path as $1 and extra as
+// $2..., keeping at most limit bytes of its output.
 func (s *Sandbox) fileOp(ctx context.Context, op, path string, stdin io.Reader, limit int64, script string, extra ...string) ([]byte, error) {
 	p := sbutil.ResolvePath(path)
-	args := []string{"exec"}
+	args := []string{"exec", "-e", "PATH=" + sandbox.SystemPath}
 	if stdin != nil {
 		args = append(args, "-i")
 	}
-	args = append(args, s.id, "sh", "-c", script, "sh", p)
+	args = append(args, s.id, "/bin/sh", "-c", script, "sh", p)
 	args = append(args, extra...)
 	out, err := s.p.runLimit(ctx, stdin, nil, limit, args...)
 	var ce *cliError

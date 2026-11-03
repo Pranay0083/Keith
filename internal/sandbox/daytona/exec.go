@@ -120,10 +120,12 @@ func (s *daytonaSandbox) Exec(ctx context.Context, req sandbox.ExecRequest, onOu
 
 // buildCommand wraps req for a session shell:
 //
-//	sh -c 'cd <dir> && K=v ... sh -c <cmd>' < /dev/null
+//	/bin/sh -c 'cd <dir> && K=v ... /bin/sh -c <cmd>' < /dev/null
 //
 // so cd and the env never touch the session shell, and nothing waits on
-// stdin. A user other than the default goes through sudo.
+// stdin. A user other than the default goes through /usr/bin/sudo, and a
+// command run as root gets PATH=sandbox.SystemPath (after the env, so it
+// wins). No shell or sudo is looked up by PATH.
 func (s *daytonaSandbox) buildCommand(req sandbox.ExecRequest) (string, error) {
 	dir := sandbox.WorkspaceDir
 	if req.Dir != "" {
@@ -142,13 +144,16 @@ func (s *daytonaSandbox) buildCommand(req sandbox.ExecRequest) (string, error) {
 		script.WriteString(sbutil.Quote(req.Env[k]))
 		script.WriteByte(' ')
 	}
-	script.WriteString("sh -c ")
+	if sandbox.IsRoot(req.User) {
+		script.WriteString("PATH=" + sandbox.SystemPath + " ")
+	}
+	script.WriteString("/bin/sh -c ")
 	script.WriteString(sbutil.Quote(req.Cmd))
 
 	if u := req.User; u != "" && u != s.user {
-		return "sudo -n -E -H -u " + sbutil.Quote(u) + " -- sh -c " + sbutil.Quote(script.String()) + " < /dev/null", nil
+		return "/usr/bin/sudo -n -E -H -u " + sbutil.Quote(u) + " -- /bin/sh -c " + sbutil.Quote(script.String()) + " < /dev/null", nil
 	}
-	return "sh -c " + sbutil.Quote(script.String()) + " < /dev/null", nil
+	return "/bin/sh -c " + sbutil.Quote(script.String()) + " < /dev/null", nil
 }
 
 func validEnvName(k string) bool {

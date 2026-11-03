@@ -123,3 +123,94 @@ func TestReadFileLimitCapsCLIOutput(t *testing.T) {
 		t.Fatalf("limits passed to the read script = %v; want %v", limits, want)
 	}
 }
+
+// argsWith returns the args of the first logged call whose argv contains
+// marker, or nil.
+func argsWith(calls []fakeCall, marker string) []string {
+	for _, c := range calls {
+		if slices.Contains(c.Args, marker) {
+			return c.Args
+		}
+	}
+	return nil
+}
+
+// Regression: root execs ran `kill` and the root setup script's tools by
+// the container's PATH, whose first entry (~/.local/bin) the agent can
+// write, so the agent could run code as root. Every exec now runs
+// /bin/sh, root execs get PATH=sandbox.SystemPath after any requested env,
+// and the timeout kill uses the shell's builtin kill.
+func TestRootExecsUseSystemPath(t *testing.T) {
+	ctx := context.Background()
+	p, calls := fakeCLI(t, "")
+	sb := &Sandbox{p: p, id: "keith-sb-fake"}
+
+	for _, user := range []string{"root", "0", "0:0", "root:root"} {
+		if _, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "id -u", User: user,
+			Env: map[string]string{"PATH": "/home/agent/.local/bin:/usr/bin"}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "whoami"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sb.ReadFile(ctx, "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	var execs int
+	for _, c := range calls() {
+		if c.Args[0] != "exec" {
+			continue
+		}
+		execs++
+		i := slices.Index(c.Args, "keith-sb-fake")
+		if i < 0 || c.Args[i+1] != "/bin/sh" {
+			t.Errorf("exec does not run /bin/sh: %q", c.Args)
+			continue
+		}
+		var paths []string
+		for j := 0; j+1 < i; j++ {
+			if c.Args[j] == "-e" && strings.HasPrefix(c.Args[j+1], "PATH") {
+				paths = append(paths, c.Args[j+1])
+			}
+		}
+		whoami := slices.Contains(c.Args, "whoami")
+		switch {
+		case whoami && len(paths) != 0:
+			t.Errorf("default-user exec sets PATH: %q", c.Args)
+		case !whoami && (len(paths) == 0 || paths[len(paths)-1] != "PATH="+sandbox.SystemPath):
+			t.Errorf("exec does not end with PATH=%s: %q", sandbox.SystemPath, c.Args)
+		}
+	}
+	if execs != 6 {
+		t.Fatalf("%d execs logged", execs)
+	}
+
+	// A timeout kills the process group as root, with the builtin kill.
+	p, calls = fakeCLI(t, "hang")
+	sb = &Sandbox{p: p, id: "keith-sb-fake"}
+	res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "sleep 30", Timeout: 200 * time.Millisecond}, nil)
+	if err != nil || !res.TimedOut {
+		t.Fatalf("Exec = %+v, %v; want a timeout", res, err)
+	}
+	got := argsWith(calls(), killScript)
+	want := []string{"exec", "-u", "0", "-e", "PATH=" + sandbox.SystemPath, "keith-sb-fake", "/bin/sh", "-c", killScript, "sh"}
+	if len(got) != len(want)+1 || !slices.Equal(got[:len(want)], want) {
+		t.Fatalf("kill args = %q; want %q <pid>", got, want)
+	}
+}
+
+// Regression: sandboxes kept Docker's default capabilities, so anything
+// that reached root had DAC_OVERRIDE, NET_RAW, MKNOD and more. They drop
+// all of them but CHOWN and KILL.
+func TestCreateDropsCapabilities(t *testing.T) {
+	p, calls := fakeCLI(t, "")
+	if _, err := p.Create(context.Background(), sandbox.Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(argsWith(calls(), "--init"), " ")
+	if !strings.Contains(args, "--cap-drop ALL --cap-add CHOWN --cap-add KILL ") ||
+		!strings.Contains(args, "--security-opt no-new-privileges:true") {
+		t.Fatalf("docker run args = %s", args)
+	}
+}

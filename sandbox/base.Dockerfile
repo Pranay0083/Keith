@@ -64,15 +64,19 @@ RUN set -eu; \
 RUN useradd --create-home --uid 1000 --shell /bin/bash agent \
  && mkdir -p /workspace \
  && chown agent:agent /workspace \
- && echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"' > /etc/profile.d/keith-path.sh
+ && echo 'export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.cargo/bin:$HOME/.local/bin"' > /etc/profile.d/keith-path.sh
 
 USER agent
 # PATH here covers non-login shells (docker exec, tmux); profile.d above
-# covers login shells, whose /etc/profile resets PATH.
+# covers login shells, whose /etc/profile resets PATH. The directories the
+# agent can write (~/go/bin, ~/.cargo/bin, ~/.local/bin) come after the
+# system ones, so nothing planted there shadows git, sh or another system
+# binary that the worker runs. Commands run as root never use this PATH:
+# the providers set sandbox.SystemPath for them.
 ENV GOPATH=/home/agent/go \
     CARGO_HOME=/home/agent/.cargo \
     RUSTUP_HOME=/home/agent/.rustup
-ENV PATH=/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/go/bin:/usr/local/go/bin:$PATH
+ENV PATH=$PATH:/usr/local/go/bin:/home/agent/go/bin:/home/agent/.cargo/bin:/home/agent/.local/bin
 
 # Rust via rustup (opt-in), installed for the agent user.
 RUN if [ "$INSTALL_RUST" = "true" ]; then \
