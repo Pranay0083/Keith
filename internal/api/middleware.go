@@ -103,7 +103,8 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 	})
 }
 
-// cors adds the CORS response headers for WEB_ORIGIN.
+// cors adds the CORS response headers for WEB_ORIGIN. Retry-After is
+// exposed so the web app can read it on a 429.
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -111,6 +112,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		if s.allowedOrigin(r) {
 			h.Set("Access-Control-Allow-Origin", s.cfg.WebOrigin)
 			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Set("Access-Control-Expose-Headers", "Retry-After")
 		}
 		next.ServeHTTP(w, r)
 	})

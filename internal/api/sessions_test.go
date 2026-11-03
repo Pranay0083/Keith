@@ -194,6 +194,10 @@ func TestCreateSessionCapIT(t *testing.T) {
 	if resp.Header().Get("Retry-After") != "30" {
 		t.Errorf("Retry-After %q", resp.Header().Get("Retry-After"))
 	}
+	// The web app (WEB_ORIGIN) may read Retry-After.
+	if got := resp.Header().Get("Access-Control-Expose-Headers"); got != "Retry-After" {
+		t.Errorf("Access-Control-Expose-Headers %q", got)
+	}
 	// Waiting and finished sessions do not count.
 	w.setStatus(t, a.ID, events.StatusWaitingForUser)
 	w.create(t, body)

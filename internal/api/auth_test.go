@@ -99,11 +99,13 @@ func TestCORS(t *testing.T) {
 	w := h.do("GET", "/api/me", nil, withOrigin(testWebOrigin))
 	if w.Header().Get("Access-Control-Allow-Origin") != testWebOrigin ||
 		w.Header().Get("Access-Control-Allow-Credentials") != "true" ||
+		w.Header().Get("Access-Control-Expose-Headers") != "Retry-After" ||
 		!strings.Contains(strings.Join(w.Header().Values("Vary"), ","), "Origin") {
 		t.Fatalf("CORS headers %v", w.Header())
 	}
 	w = h.do("GET", "/api/me", nil, withOrigin("https://evil.test"))
-	if w.Header().Get("Access-Control-Allow-Origin") != "" || w.Header().Get("Access-Control-Allow-Credentials") != "" {
+	if w.Header().Get("Access-Control-Allow-Origin") != "" || w.Header().Get("Access-Control-Allow-Credentials") != "" ||
+		w.Header().Get("Access-Control-Expose-Headers") != "" {
 		t.Fatalf("other origin got CORS headers %v", w.Header())
 	}
 
