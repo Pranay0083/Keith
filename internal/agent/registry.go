@@ -54,6 +54,8 @@ func DefaultTools(opts ToolOptions) []Tool {
 		editFileTool{},
 		deleteFileTool{},
 		undoEditTool{},
+		searchTool{maxOutput: o.MaxOutputBytes},
+		readIssueTool{},
 		messageUserTool{newID: o.NewID},
 		askUserTool{},
 	}
