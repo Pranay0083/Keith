@@ -32,6 +32,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.AddCommand(newAPICmd(), newWorkerCmd(), newVersionCmd())
 	root.AddCommand(newSandboxBenchCmd())
+	root.AddCommand(newRunCmd(), newSessionsCmd(), newLogsCmd())
 	return root
 }
 
