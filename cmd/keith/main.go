@@ -34,6 +34,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: false,
 	}
 	root.AddCommand(newAPICmd(), newWorkerCmd(), newVersionCmd())
+	root.AddCommand(newSandboxBenchCmd())
 	return root
 }
 
