@@ -43,7 +43,10 @@ type Session struct {
 	UpdatedAt         time.Time
 	// FinishedAt is set while the status is terminal.
 	FinishedAt *time.Time
-	// Repos are the session's repos by full name.
+	// OpenQuestionID is the question_id of the question.asked waiting for
+	// an answer, or "" (see SetOpenQuestion).
+	OpenQuestionID string
+	// Repos are the session's repos in the order they were tagged.
 	Repos []SessionRepo
 }
 
@@ -70,7 +73,8 @@ type CreateSessionParams struct {
 	Provider  string
 	Model     string
 	// RepoIDs must be accessible repos of OrgID. Each gets the branch
-	// SessionBranch(id).
+	// SessionBranch(id). The session lists them in this order; duplicates
+	// keep their first position.
 	RepoIDs   []string
 	RoutineID string
 	Trigger   json.RawMessage
@@ -78,17 +82,17 @@ type CreateSessionParams struct {
 
 const sessionCols = `s.id, s.org_id, s.created_by, s.status, s.status_reason, s.prompt, s.provider, s.model,
 	s.sandbox_id, s.sandbox_provider, s.routine_id, s.trigger, s.cancel_requested_at,
-	s.created_at, s.updated_at, s.finished_at`
+	s.created_at, s.updated_at, s.finished_at, s.open_question_id`
 
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var x Session
-	var createdBy, sandboxID, sandboxProvider, routineID *string
+	var createdBy, sandboxID, sandboxProvider, routineID, openQuestion *string
 	var trigger []byte
 	err := row.Scan(&x.ID, &x.OrgID, &createdBy, &x.Status, &x.StatusReason, &x.Prompt, &x.Provider, &x.Model,
 		&sandboxID, &sandboxProvider, &routineID, &trigger, &x.CancelRequestedAt,
-		&x.CreatedAt, &x.UpdatedAt, &x.FinishedAt)
-	x.CreatedBy, x.SandboxID, x.SandboxProvider, x.RoutineID =
-		deref(createdBy), deref(sandboxID), deref(sandboxProvider), deref(routineID)
+		&x.CreatedAt, &x.UpdatedAt, &x.FinishedAt, &openQuestion)
+	x.CreatedBy, x.SandboxID, x.SandboxProvider, x.RoutineID, x.OpenQuestionID =
+		deref(createdBy), deref(sandboxID), deref(sandboxProvider), deref(routineID), deref(openQuestion)
 	if trigger != nil {
 		x.Trigger = json.RawMessage(trigger)
 	}
@@ -107,9 +111,14 @@ func (s *Store) CreateSession(ctx context.Context, p CreateSessionParams) (Sessi
 	if p.Provider == "" || p.Model == "" {
 		return Session{}, fmt.Errorf("store: %s: provider and model are required", op)
 	}
-	repoIDs := slices.Clone(p.RepoIDs)
-	slices.Sort(repoIDs)
-	repoIDs = slices.Compact(repoIDs)
+	// repoIDs keeps the caller's order (first occurrence wins); it becomes
+	// session_repos.position.
+	repoIDs := make([]string, 0, len(p.RepoIDs))
+	for _, id := range p.RepoIDs {
+		if !slices.Contains(repoIDs, id) {
+			repoIDs = append(repoIDs, id)
+		}
+	}
 
 	var trigger any
 	if len(p.Trigger) > 0 {
@@ -134,8 +143,8 @@ func (s *Store) CreateSession(ctx context.Context, p CreateSessionParams) (Sessi
 			return nil
 		}
 		tag, err := tx.db.Exec(ctx, `
-			INSERT INTO session_repos (session_id, repo_id, branch)
-			SELECT $1, r.id, $2 FROM repos r
+			INSERT INTO session_repos (session_id, repo_id, branch, position)
+			SELECT $1, r.id, $2, array_position($3::uuid[], r.id) - 1 FROM repos r
 			WHERE r.id = ANY($3::uuid[]) AND r.org_id = $4 AND r.accessible`,
 			out.ID, SessionBranch(out.ID), repoIDs, p.OrgID)
 		if err != nil {
@@ -402,7 +411,8 @@ func scanSessionRepo(row interface{ Scan(...any) error }) (SessionRepo, error) {
 	return x, err
 }
 
-// ListSessionRepos returns a session's repos by full name.
+// ListSessionRepos returns a session's repos in the order they were
+// tagged.
 func (s *Store) ListSessionRepos(ctx context.Context, sessionID string) ([]SessionRepo, error) {
 	if !validID(sessionID) {
 		return nil, nil
@@ -416,7 +426,7 @@ func (s *Store) sessionRepos(ctx context.Context, sessionIDs []string) (map[stri
 		SELECT `+sessionRepoCols+`
 		FROM session_repos sr JOIN repos r ON r.id = sr.repo_id
 		WHERE sr.session_id = ANY($1::uuid[])
-		ORDER BY sr.session_id, r.full_name, r.id`, sessionIDs)
+		ORDER BY sr.session_id, sr.position, r.full_name, r.id`, sessionIDs)
 	if err != nil {
 		return nil, wrap("list session repos", err)
 	}

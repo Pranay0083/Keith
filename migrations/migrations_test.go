@@ -22,6 +22,13 @@ var v1Tables = []string{
 	"repos", "secrets", "session_repos", "sessions", "users",
 }
 
+// allTables is every table after the latest migration: v1Tables plus
+// session_inputs (00003).
+var allTables = []string{
+	"agent_state", "events", "github_installations", "org_members", "orgs", "repo_profiles",
+	"repos", "secrets", "session_inputs", "session_repos", "sessions", "users",
+}
+
 func TestV1SchemaDeclaresElevenTables(t *testing.T) {
 	b, err := fs.ReadFile(FS, "00001_v1_schema.sql")
 	if err != nil {
@@ -60,7 +67,9 @@ func TestMigrationsApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	// Registered before the drop, so it runs after it (cleanups are LIFO);
+	// a deferred Close would run first and leak the scratch database.
+	t.Cleanup(func() { admin.Close() })
 
 	suffix := make([]byte, 6)
 	rand.Read(suffix)
@@ -90,7 +99,7 @@ func TestMigrationsApply(t *testing.T) {
 	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	assertTables(t, db, v1Tables)
+	assertTables(t, db, allTables)
 	if _, err := p.DownTo(ctx, 0); err != nil {
 		t.Fatalf("down: %v", err)
 	}
@@ -98,7 +107,7 @@ func TestMigrationsApply(t *testing.T) {
 	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("up again: %v", err)
 	}
-	assertTables(t, db, v1Tables)
+	assertTables(t, db, allTables)
 }
 
 func assertTables(t *testing.T, db *sql.DB, want []string) {

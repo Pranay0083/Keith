@@ -69,15 +69,15 @@ func TestMigrateFromEmpty(t *testing.T) {
 	}
 	ok(t, rows.Err())
 	want := []string{"agent_state", "events", "github_installations", "org_members", "orgs",
-		"repo_profiles", "repos", "secrets", "session_repos", "sessions", "users"}
+		"repo_profiles", "repos", "secrets", "session_inputs", "session_repos", "sessions", "users"}
 	if !slices.Equal(tables, want) {
 		t.Errorf("tables = %v, want %v", tables, want)
 	}
 
 	var version int64
 	ok(t, s.Pool().QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&version))
-	if version != 2 {
-		t.Errorf("goose version = %d, want 2", version)
+	if version != 3 {
+		t.Errorf("goose version = %d, want 3", version)
 	}
 	var hasReason bool
 	ok(t, s.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
