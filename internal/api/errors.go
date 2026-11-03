@@ -24,6 +24,7 @@ const (
 	codeQuestionMismatch    = "question_mismatch"
 	codeAnswerRequired      = "answer_required"
 	codeNotRunning          = "not_running"
+	codeRepoAccessLost      = "repo_access_lost"
 	codeTooLarge            = "too_large"
 	codeUnsupportedMedia    = "unsupported_media_type"
 	codeValidationFailed    = "validation_failed"

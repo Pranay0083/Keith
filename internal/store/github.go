@@ -171,25 +171,51 @@ func scanRepo(row interface{ Scan(...any) error }) (Repo, error) {
 // UpsertRepo records a repo under its installation, taking the org from
 // the installation, and marks it accessible. A repo that moved to another
 // installation (a transfer) moves with it. The installation must exist.
+//
+// A move to another org's installation also deletes the repo's profile
+// (the onboarding answers and the sandbox snapshot): they belong to the
+// old org. The old org's sessions on the repo see it as Inaccessible
+// (SessionRepo), and its repo secrets stay with the old org.
 func (s *Store) UpsertRepo(ctx context.Context, p UpsertRepoParams) (Repo, error) {
 	if p.DefaultBranch == "" {
 		p.DefaultBranch = "main"
 	}
-	r, err := scanRepo(s.db.QueryRow(ctx, `
-		INSERT INTO repos AS r (org_id, installation_id, github_repo_id, full_name, default_branch, private)
-		SELECT i.org_id, i.installation_id, $2, $3, $4, $5
-		FROM github_installations i WHERE i.installation_id = $1
-		ON CONFLICT (github_repo_id) DO UPDATE SET
-			org_id          = EXCLUDED.org_id,
-			installation_id = EXCLUDED.installation_id,
-			full_name       = EXCLUDED.full_name,
-			default_branch  = EXCLUDED.default_branch,
-			private         = EXCLUDED.private,
-			accessible      = true,
-			updated_at      = now()
-		RETURNING `+repoCols,
-		p.InstallationID, p.GitHubRepoID, p.FullName, p.DefaultBranch, p.Private))
-	return r, notFound("upsert repo: installation", err)
+	var r Repo
+	err := s.WithTx(ctx, func(tx *Store) error {
+		// Lock the existing row first, so a concurrent move waits and the
+		// org read here is the one this upsert replaces.
+		var prevOrg string
+		err := tx.db.QueryRow(ctx, `SELECT org_id FROM repos WHERE github_repo_id = $1 FOR UPDATE`,
+			p.GitHubRepoID).Scan(&prevOrg)
+		if err != nil && !isNoRows(err) {
+			return err
+		}
+		r, err = scanRepo(tx.db.QueryRow(ctx, `
+			INSERT INTO repos AS r (org_id, installation_id, github_repo_id, full_name, default_branch, private)
+			SELECT i.org_id, i.installation_id, $2, $3, $4, $5
+			FROM github_installations i WHERE i.installation_id = $1
+			ON CONFLICT (github_repo_id) DO UPDATE SET
+				org_id          = EXCLUDED.org_id,
+				installation_id = EXCLUDED.installation_id,
+				full_name       = EXCLUDED.full_name,
+				default_branch  = EXCLUDED.default_branch,
+				private         = EXCLUDED.private,
+				accessible      = true,
+				updated_at      = now()
+			RETURNING `+repoCols,
+			p.InstallationID, p.GitHubRepoID, p.FullName, p.DefaultBranch, p.Private))
+		if err != nil {
+			return err
+		}
+		if prevOrg != "" && prevOrg != r.OrgID {
+			_, err = tx.db.Exec(ctx, `DELETE FROM repo_profiles WHERE repo_id = $1`, r.ID)
+		}
+		return err
+	})
+	if err != nil {
+		return Repo{}, notFound("upsert repo: installation", err)
+	}
+	return r, nil
 }
 
 // GetRepo returns a repo by ID.

@@ -35,6 +35,7 @@ Every non-2xx response from `/api/*` and `/auth/logout` has this body:
 | 409 | `question_mismatch` | `POST /answers` with a `question_id` that is not the open question |
 | 409 | `answer_required` | `POST /messages` while the session is `waiting_for_user` |
 | 409 | `not_running` | `POST /stop` on a session in a terminal status |
+| 409 | `repo_access_lost` | `POST /messages` to a finished session, or `POST /answers`, when the org can no longer use one of the session's repos |
 | 413 | `too_large` | Body over 1 MiB |
 | 415 | `unsupported_media_type` | Body without `Content-Type: application/json` |
 | 422 | `validation_failed` | A field failed validation; see `fields` |
@@ -178,6 +179,8 @@ Every repo the org's installations can see, sorted by `full_name`, including ina
 
 `profile` is `null` until a profile is saved.
 
+A repo belongs to the org whose installation last listed it. When a repo moves to another org's installation (for example, the App is uninstalled from one org and installed into another), its profile and snapshot are deleted, and the old org's sessions on it can no longer be resumed (`409 repo_access_lost`).
+
 ### `GET /api/repos/{repo_id}/profile`
 
 `200` with the profile. A repo without a saved profile returns empty strings and `"updated_at": null`.
@@ -320,6 +323,7 @@ Steer a running session, or send a follow-up to a finished one. Any member.
 
 - Running statuses (`queued` … `running`): the message is queued and the worker adds it to the next model turn. It is never dropped.
 - Terminal statuses: the message is queued and the API enqueues `resume_session`.
+  - If the org can no longer use one of the session's repos, the API answers `409 repo_access_lost` and stores nothing. That happens when the repo was removed from the installation, the App was uninstalled, or the repo now belongs to another org's installation. Start a new session instead.
 - `waiting_for_user`: `409 answer_required`. Use `/answers`.
 
 The API does not write an event. The worker emits `message.user` with this `message_id` when it hands the message to the model, so the UI shows the message as pending until then.
@@ -336,6 +340,7 @@ Answer the open `question.asked`. Any member.
 
 - Status not `waiting_for_user`: `409 not_waiting`.
 - `question_id` is not the open question (the latest `question.asked` with no answer): `409 question_mismatch`.
+- The org can no longer use one of the session's repos (as for `/messages`): `409 repo_access_lost`. The question stays open.
 
 Otherwise the API stores the answer, enqueues `resume_session` and returns `202 { "message_id": "m_01J…" }`. The resuming worker emits `message.user` with this `message_id` and the `question_id`, then `session.status` `running`.
 

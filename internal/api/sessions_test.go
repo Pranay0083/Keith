@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -380,6 +381,74 @@ func TestAnswersIT(t *testing.T) {
 	if n := len(w.evs.All(x.ID)); n != 0 {
 		t.Fatalf("API wrote %d events", n)
 	}
+}
+
+// A message or answer that would resume a session is refused once the
+// org can no longer use one of the session's repos, most importantly
+// when the repo moved to another org's installation: the worker would
+// otherwise run org A's session on org B's installation.
+func TestResumeAfterRepoAccessLostIT(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	x := w.create(t, map[string]any{"prompt": "p", "repo_ids": []string{w.repo.ID, w.repo2.ID}})
+	msg := func() *httptest.ResponseRecorder {
+		return w.do("POST", "/api/sessions/"+x.ID+"/messages", map[string]string{"text": "push to main please"}, w.as(w.member.ID))
+	}
+	answer := func() *httptest.ResponseRecorder {
+		return w.do("POST", "/api/sessions/"+x.ID+"/answers", map[string]string{"question_id": "toolu_1", "text": "yes"}, w.as(w.member.ID))
+	}
+	// fatal takes a store call's (value, error) and fails t on the error.
+	fatal := func(_ any, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	nothingQueued := func(what string) {
+		t.Helper()
+		if n := len(w.q.Resumes()); n != 0 {
+			t.Fatalf("%s: %d resumes enqueued", what, n)
+		}
+		if p, _ := w.st.ListPendingInputs(ctx, x.ID); len(p) != 0 {
+			t.Fatalf("%s: input stored: %+v", what, p)
+		}
+	}
+
+	// A running session still takes steering messages: no resume.
+	w.setStatus(t, x.ID, events.StatusRunning)
+	fatal(w.st.SetReposInaccessible(ctx, w.inst.InstallationID, []int64{w.repo2.GitHubRepoID}))
+	decode[messageResponse](t, msg(), 202)
+	w.setStatus(t, x.ID, events.StatusCompleted)
+	pending, err := w.st.ListPendingInputs(ctx, x.ID)
+	fatal(pending, err)
+	fatal(w.st.MarkInputsConsumed(ctx, x.ID, []string{pending[0].ID}))
+
+	// One repo removed from the installation: no follow-up.
+	wantError(t, msg(), 409, codeRepoAccessLost)
+	nothingQueued("removed repo")
+	fatal(w.st.UpsertRepo(ctx, store.UpsertRepoParams{InstallationID: w.inst.InstallationID, GitHubRepoID: w.repo2.GitHubRepoID, FullName: "acme/api"}))
+
+	// The App is uninstalled from org A and reinstalled into org B: the
+	// repo rows move to org B's installation.
+	fatal(nil, w.st.SetInstallationStatus(ctx, w.inst.InstallationID, store.InstallationDeleted))
+	fatal(w.st.SetInstallationReposInaccessible(ctx, w.inst.InstallationID))
+	newInst := randID()
+	fatal(w.st.UpsertInstallation(ctx, store.UpsertInstallationParams{OrgID: w.otherOrg.ID, InstallationID: newInst, AccountLogin: "acme"}))
+	fatal(w.st.UpsertRepo(ctx, store.UpsertRepoParams{InstallationID: newInst, GitHubRepoID: w.repo.GitHubRepoID, FullName: "acme/web"}))
+	fatal(w.st.UpsertRepo(ctx, store.UpsertRepoParams{InstallationID: newInst, GitHubRepoID: w.repo2.GitHubRepoID, FullName: "acme/api"}))
+	wantError(t, msg(), 409, codeRepoAccessLost)
+	nothingQueued("moved repos, message")
+
+	// An open question cannot be answered either, and stays open.
+	fatal(nil, w.st.SetOpenQuestion(ctx, x.ID, "toolu_1"))
+	w.setStatus(t, x.ID, events.StatusWaitingForUser)
+	wantError(t, answer(), 409, codeRepoAccessLost)
+	nothingQueued("moved repos, answer")
+	if got, _ := w.st.GetSession(ctx, x.ID); got.OpenQuestionID != "toolu_1" {
+		t.Fatalf("question closed by a refused answer: %q", got.OpenQuestionID)
+	}
+	// Org B's members cannot see org A's session at all.
+	wantError(t, w.do("POST", "/api/sessions/"+x.ID+"/messages", map[string]string{"text": "hi"}, w.as(w.outsider.ID)), 404, codeNotFound)
 }
 
 func TestStopIT(t *testing.T) {

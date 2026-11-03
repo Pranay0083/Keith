@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -431,6 +432,11 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) error
 		if status == events.StatusWaitingForUser {
 			return errorf(http.StatusConflict, codeAnswerRequired, "The session is waiting for an answer. Use /answers.")
 		}
+		if status.Terminal() { // this message resumes the session
+			if err := checkReposUsable(ctx, tx, x.ID); err != nil {
+				return err
+			}
+		}
 		in, err = tx.CreateInput(ctx, store.CreateInputParams{
 			SessionID: x.ID, Kind: store.InputMessage, UserID: currentUser(r).ID, Text: text,
 		})
@@ -451,6 +457,25 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) error
 		}
 	}
 	writeJSON(w, http.StatusAccepted, messageResponse{in.ID})
+	return nil
+}
+
+// checkReposUsable refuses, with 409 repo_access_lost, to resume a
+// session when its org can no longer use one of its repos: the repo was
+// removed from the installation, the App was uninstalled, or the repo
+// moved to another org's installation. The worker would otherwise
+// provision it with no access, or with the other org's.
+func checkReposUsable(ctx context.Context, tx *store.Store, sessionID string) error {
+	repos, err := tx.ListSessionRepos(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, r := range repos {
+		if r.Inaccessible {
+			return errorf(http.StatusConflict, codeRepoAccessLost,
+				"%s is no longer available to this organization, so this session cannot continue. Start a new session.", r.FullName)
+		}
+	}
 	return nil
 }
 
@@ -504,6 +529,9 @@ func (s *Server) handlePostAnswer(w http.ResponseWriter, r *http.Request) error 
 		}
 		if cur.OpenQuestionID == "" || cur.OpenQuestionID != qid {
 			return errorf(http.StatusConflict, codeQuestionMismatch, "That question is not the open question.")
+		}
+		if err := checkReposUsable(ctx, tx, x.ID); err != nil {
+			return err
 		}
 		in, err = tx.CreateInput(ctx, store.CreateInputParams{
 			SessionID: x.ID, Kind: store.InputAnswer, QuestionID: qid, UserID: currentUser(r).ID, Text: text,

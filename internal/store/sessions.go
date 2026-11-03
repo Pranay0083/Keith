@@ -56,6 +56,8 @@ type SessionRepo struct {
 	RepoID    string
 	// FullName, InstallationID and DefaultBranch come from the repo, so the
 	// worker can mint a token and clone without another lookup.
+	// InstallationID is 0 when the repo has moved to another org's
+	// installation (see Inaccessible), so no token can be minted for it.
 	FullName       string
 	InstallationID int64
 	DefaultBranch  string
@@ -63,6 +65,11 @@ type SessionRepo struct {
 	// PRNumber is 0 until a PR is opened.
 	PRNumber int
 	PRURL    string
+	// Inaccessible means the session's org can no longer use the repo:
+	// it was removed from its installation, the App was uninstalled, or
+	// the repo moved to another org's installation. A session with an
+	// inaccessible repo must not be resumed or provisioned again.
+	Inaccessible bool
 }
 
 // CreateSessionParams describes a new session.
@@ -395,15 +402,20 @@ func (s *Store) sessionExists(ctx context.Context, id string) (bool, error) {
 	return exists, err
 }
 
-const sessionRepoCols = `sr.session_id, sr.repo_id, r.full_name, r.installation_id, r.default_branch,
-	sr.branch, sr.pr_number, sr.pr_url`
+// sessionRepoCols reads session_repos sr, its repo r and its session s.
+// A repo row follows its GitHub repo to whichever org's installation
+// last listed it, so the repo's org is checked against the session's
+// here: another org's installation never reaches this session.
+const sessionRepoCols = `sr.session_id, sr.repo_id, r.full_name,
+	CASE WHEN r.org_id = s.org_id THEN r.installation_id ELSE 0 END, r.default_branch,
+	sr.branch, sr.pr_number, sr.pr_url, NOT (r.accessible AND r.org_id = s.org_id)`
 
 func scanSessionRepo(row interface{ Scan(...any) error }) (SessionRepo, error) {
 	var x SessionRepo
 	var prNumber *int32
 	var prURL *string
 	err := row.Scan(&x.SessionID, &x.RepoID, &x.FullName, &x.InstallationID, &x.DefaultBranch,
-		&x.Branch, &prNumber, &prURL)
+		&x.Branch, &prNumber, &prURL, &x.Inaccessible)
 	if prNumber != nil {
 		x.PRNumber = int(*prNumber)
 	}
@@ -424,7 +436,7 @@ func (s *Store) ListSessionRepos(ctx context.Context, sessionID string) ([]Sessi
 func (s *Store) sessionRepos(ctx context.Context, sessionIDs []string) (map[string][]SessionRepo, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT `+sessionRepoCols+`
-		FROM session_repos sr JOIN repos r ON r.id = sr.repo_id
+		FROM session_repos sr JOIN repos r ON r.id = sr.repo_id JOIN sessions s ON s.id = sr.session_id
 		WHERE sr.session_id = ANY($1::uuid[])
 		ORDER BY sr.session_id, sr.position, r.full_name, r.id`, sessionIDs)
 	if err != nil {
