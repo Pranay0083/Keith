@@ -97,7 +97,9 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) DB() DBTX { return s.db }
 
 // Events returns an events.Store that writes on the same pool or
-// transaction as s.
+// transaction as s. Inside WithTx, publish the appended events only after
+// the transaction commits: a rolled-back seq is reused by the next append,
+// and a client that saw the published copy would drop the real one.
 func (s *Store) Events() *pgevents.Store { return pgevents.New(s.db) }
 
 // Migrate applies every pending migration in migrations.FS. A Postgres
