@@ -228,6 +228,7 @@ Role: `owner` or `admin`. Creates or replaces the secret.
 ```
 
 - `name` (path) must match `^[A-Za-z_][A-Za-z0-9_]*$` and be at most 128 characters.
+- `name` must not be reserved. Secrets become environment variables of the sandbox (and, on the docker provider, of the worker's docker CLI), so these names, compared case-insensitively, are refused with `422` on `fields.name`: anything starting with `DOCKER_`, `GIT_`, `KEITH_` or `LD_`, and `PATH`, `HOME`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY`. `DELETE` still accepts them, to remove a secret saved before the rule.
 - `value` must be a non-empty string of at most 65,536 bytes.
 - `repo_id` is optional; `null` or absent means an org secret. It must be a repo of this org.
 

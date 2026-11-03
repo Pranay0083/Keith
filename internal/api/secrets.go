@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/Pranay0083/keith/internal/store"
 )
@@ -65,6 +67,31 @@ func validSecretName(name string) bool {
 	return len(name) <= maxSecretNameLen && store.ValidSecretName(name)
 }
 
+// Reserved secret names. Secrets become environment variables of the
+// sandbox, and on the docker provider of the worker's docker CLI too, so
+// these names could redirect or reconfigure the worker (DOCKER_HOST, the
+// proxy variables), the dynamic loader (LD_*), git and the credential
+// helper (GIT_*), the shell (PATH, HOME) or Keith itself (KEITH_*). They
+// are compared case-insensitively, since tools also read http_proxy and
+// friends in lower case.
+var (
+	reservedSecretPrefixes = []string{"DOCKER_", "GIT_", "KEITH_", "LD_"}
+	reservedSecretNames    = []string{"PATH", "HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+)
+
+const reservedSecretMsg = "is reserved: names starting with DOCKER_, GIT_, KEITH_ or LD_, and PATH, HOME, HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY, in any case, are not allowed"
+
+// reservedSecretName reports whether name may not be used for a secret.
+func reservedSecretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range reservedSecretPrefixes {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return slices.Contains(reservedSecretNames, upper)
+}
+
 // handlePutSecret is PUT /api/orgs/{org_id}/secrets/{name} (owner or
 // admin).
 func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) error {
@@ -78,8 +105,11 @@ func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) error {
 	}
 	name := r.PathValue("name")
 	fields := map[string]string{}
-	if !validSecretName(name) {
+	switch {
+	case !validSecretName(name):
 		fields["name"] = "must match ^[A-Za-z_][A-Za-z0-9_]*$ and be at most 128 characters"
+	case reservedSecretName(name):
+		fields["name"] = reservedSecretMsg
 	}
 	switch {
 	case req.Value == nil || *req.Value == "":
@@ -131,7 +161,8 @@ func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) error {
 }
 
 // handleDeleteSecret is DELETE /api/orgs/{org_id}/secrets/{name}
-// [?repo_id=] (owner or admin).
+// [?repo_id=] (owner or admin). Reserved names can be deleted, so a
+// secret saved before they were reserved can be removed.
 func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) error {
 	orgID, _, err := s.orgAccess(r, store.RoleAdmin)
 	if err != nil {
