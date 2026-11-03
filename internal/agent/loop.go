@@ -674,11 +674,32 @@ func (r *Runner) runTools(ctx context.Context, run *Run, st *State, uses []llm.B
 			return nil
 		}
 		if err := r.callTool(ctx, run, st, u); err != nil {
+			if ctx.Err() != nil {
+				notRun(uses[i:i+1], lostResultNote)
+				notRun(uses[i+1:], "Not run: the session was interrupted.")
+				return err
+			}
 			notRun(uses[i:], "Not run: the session stopped because of an internal error.")
 			return err
 		}
 	}
 	return nil
+}
+
+// finishTimeout bounds emitting tool_call.finished once the run's context
+// is done, so the call does not stay running in the timeline.
+const finishTimeout = 5 * time.Second
+
+// emitFinished emits tool_call.finished. If ctx is done (the worker is
+// shutting down), it uses a short context detached from ctx's
+// cancellation; the lease check in the worker's Emit still applies.
+func (r *Run) emitFinished(ctx context.Context, p events.ToolCallFinishedPayload) error {
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+		defer cancel()
+	}
+	return r.emit(ctx, events.TypeToolCallFinished, p)
 }
 
 // callTool runs one tool call and appends its result to the pending turn.
@@ -712,8 +733,11 @@ func (r *Runner) callTool(ctx context.Context, run *Run, st *State, u llm.Block)
 	if err != nil {
 		finished.IsError = true
 		finished.Summary = "internal error"
+		if ctx.Err() != nil {
+			finished.Summary = "interrupted"
+		}
 		finished.DurationMS = r.cfg.Now().Sub(start).Milliseconds()
-		_ = run.emit(ctx, events.TypeToolCallFinished, finished)
+		_ = run.emitFinished(ctx, finished)
 		return err
 	}
 
@@ -742,7 +766,7 @@ func (r *Runner) callTool(ctx context.Context, run *Run, st *State, u llm.Block)
 	finished.TimedOut = res.TimedOut
 	finished.Summary = res.Summary
 	finished.DurationMS = r.cfg.Now().Sub(start).Milliseconds()
-	if err := run.emit(ctx, events.TypeToolCallFinished, finished); err != nil {
+	if err := run.emitFinished(ctx, finished); err != nil {
 		return err
 	}
 	p.Results = append(p.Results, llm.ToolResultBlock(u.ID, res.IsError, res.Content...))

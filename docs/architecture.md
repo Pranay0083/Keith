@@ -247,7 +247,7 @@ The agent emits:
 
 - `message.user` (when an input is handed to the model)
 - `message.delta` and `message.assistant` (under one message ID)
-- `tool_call.started` and `tool_call.finished`
+- `tool_call.started` and `tool_call.finished` (when the worker's context is cancelled mid-call, `tool_call.finished` still goes out, on a short context detached from the cancellation, with summary `interrupted` if the tool failed)
 - `shell.created`
 - `file.changed` (after `AfterFileChange`)
 - `question.asked` (after the whole tool batch, so the worker's `session.status waiting_for_user` follows it directly)

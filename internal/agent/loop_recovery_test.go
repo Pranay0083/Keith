@@ -2,7 +2,9 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -147,5 +149,75 @@ func TestAnsweringOpenCallsReportsEmitAndCheckpointFailures(t *testing.T) {
 	wantKind(t, out, agent.OutcomeFailed)
 	if out.Reason != agent.ReasonCheckpointFailed || len(h.rec.Calls()) != 0 {
 		t.Fatalf("outcome = %+v, %d model calls", out, len(h.rec.Calls()))
+	}
+}
+
+// TestToolCallFinishedSurvivesACancelledContext: when the worker's context
+// is cancelled while a tool runs (SIGTERM), tool_call.finished still
+// reaches the store, which, like the real one, refuses a done context.
+func TestToolCallFinishedSurvivesACancelledContext(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failErr bool // the tool returns ctx.Err() rather than a result
+		summary string
+	}{
+		{"tool returns ctx.Err", true, "interrupted"},
+		{"tool returns a result", false, "stopped early"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			slow := fakeTool{name: "slow", fn: func(ctx context.Context, run *agent.Run, input json.RawMessage) (agent.Result, error) {
+				cancel() // SIGTERM arrives while the tool runs
+				if tc.failErr {
+					return agent.Result{}, ctx.Err()
+				}
+				return agent.Result{Content: []llm.Block{llm.TextBlock("partial output")}, Summary: "stopped early"}, nil
+			}}
+			h := newHarness(t, slow, echoTool)
+			h.run.Emit = func(ctx context.Context, typ string, payload any) error {
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("store: %w", err)
+				}
+				return h.events.Emit(ctx, typ, payload)
+			}
+			h.prov.Push(llmtest.ToolCalls(call("c1", "slow", map[string]string{}), call("c2", "echo", map[string]string{})))
+			r, err := agent.NewRunner(h.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := r.Run(ctx, h.run, h.st)
+			wantKind(t, out, agent.OutcomeFailed)
+			if out.Reason != agent.ReasonInterrupted {
+				t.Fatalf("outcome = %+v", out)
+			}
+
+			fin := agenttest.Payloads[events.ToolCallFinishedPayload](h.events, events.TypeToolCallFinished)
+			if len(fin) != 1 || fin[0].CallID != "c1" || fin[0].IsError != tc.failErr || fin[0].Summary != tc.summary {
+				t.Fatalf("finished = %+v", fin)
+			}
+			res := h.st.Aux.Pending.Results
+			if len(res) != 2 || res[0].ToolUseID != "c1" || res[1].ToolUseID != "c2" {
+				t.Fatalf("results = %s", mustJSON(res))
+			}
+			if tc.failErr && (!res[0].IsError || !strings.Contains(agenttest.BlockText(res[0]), "Interrupted")) {
+				t.Fatalf("c1 result = %s", mustJSON(res[0]))
+			}
+			if !res[1].IsError || agenttest.BlockText(res[1]) != "Not run: the session was interrupted." {
+				t.Fatalf("c2 result = %s", mustJSON(res[1]))
+			}
+
+			// The next run sends the held results and announces nothing
+			// again.
+			h.reload()
+			h.events.Reset()
+			h.queue.Push(agent.Input{ID: "m1", Text: "carry on"})
+			h.prov.Push(llmtest.Text("done"))
+			wantKind(t, h.runOnce(), agent.OutcomeEndTurn)
+			agenttest.CheckAppendOnly(t, h.rec.Calls())
+			if n := len(agenttest.Payloads[events.ToolCallFinishedPayload](h.events, events.TypeToolCallFinished)); n != 0 {
+				t.Fatalf("%d tool_call.finished on resume", n)
+			}
+		})
 	}
 }
