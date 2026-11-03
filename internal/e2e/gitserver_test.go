@@ -366,6 +366,15 @@ func (gs *gitServer) listBranches(fullName string) ([]string, error) {
 	return bs, nil
 }
 
+// refs returns every ref of the repo as "name oid" lines, sorted.
+func (gs *gitServer) refs(t testing.TB, fullName string) []string {
+	t.Helper()
+	out := gs.mustGit(t, gs.bareDir(fullName), "for-each-ref", "--format=%(refname) %(objectname)")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	slices.Sort(lines)
+	return lines
+}
+
 // branches returns the repo's branch names, sorted.
 func (gs *gitServer) branches(t testing.TB, fullName string) []string {
 	t.Helper()

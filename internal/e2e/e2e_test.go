@@ -31,6 +31,30 @@ var webFiles = map[string]string{
 	"test.sh":   "#!/bin/sh\nout=$(sh greet.sh World)\nif [ \"$out\" = \"Hello, World!\" ]; then echo PASS; else echo \"FAIL: got '$out'\"; exit 1; fi\n",
 }
 
+// otherSessionBranch is another session's branch in the fixture repo,
+// which this session must not be able to touch.
+const otherSessionBranch = "agent/00000000-0000-4000-8000-0000000000ff"
+
+// sandboxPushes tries, from a shell in the sandbox, to push a new commit
+// to main, to another session's branch and to its own, to delete that
+// other branch and the tag, and to force-push. Each push would change a
+// ref. It prints ALL-PUSHES-REFUSED and exits 0 only if every push
+// failed.
+func sandboxPushes(ownBranch string) string {
+	var refspecs []string
+	for _, r := range []string{
+		"$c:refs/heads/main", "+$c:refs/heads/main", "$c:refs/heads/" + otherSessionBranch,
+		"+$c:refs/heads/" + otherSessionBranch, ":refs/heads/" + otherSessionBranch, ":refs/tags/v1",
+		"$c:refs/heads/" + ownBranch, "$c:refs/heads/new-branch",
+	} {
+		refspecs = append(refspecs, `"`+r+`"`)
+	}
+	return `cd /workspace/web && export GIT_TERMINAL_PROMPT=0 && ` +
+		`c=$(git -c user.name=x -c user.email=x@example.test commit-tree "HEAD^{tree}" -p HEAD -m injected) && ` +
+		"for r in " + strings.Join(refspecs, " ") +
+		`; do if git push -q origin "$r" >/dev/null 2>&1; then echo "PUSHED $r"; exit 1; fi; done; echo ALL-PUSHES-REFUSED`
+}
+
 // scripted is the session's scripted model: a provider shared by every
 // worker task of a test, with a step queue the test fills.
 type scripted struct {
@@ -57,6 +81,9 @@ func (s *scripted) Calls() int {
 func startWorker(t *testing.T, e *env, model llm.Provider) *worker.Worker {
 	t.Helper()
 	opts := worker.OptionsFromConfig(e.Config)
+	// The worker pushes from the host, where host.docker.internal (the
+	// sandboxes' name for the git server) may not resolve.
+	opts.GitPushBaseURL = e.Git.LocalURL()
 	opts.CancelPoll = 300 * time.Millisecond
 	opts.LeaseTTL = 10 * time.Second
 	w, err := worker.New(worker.Deps{
@@ -85,14 +112,18 @@ func startWorker(t *testing.T, e *env, model llm.Provider) *worker.Worker {
 	return w
 }
 
-// fixture signs a user in, seeds acme/web (git repo, App installation,
-// issue #1, profile and an org secret) and returns the client and IDs.
+// fixture signs a user in, seeds acme/web (git repo with main, another
+// session's branch and a tag; App installation, issue #1, profile and an
+// org secret) and returns the client and IDs.
 func fixture(t *testing.T, e *env) (*http.Client, store.Org, store.Repo) {
 	t.Helper()
 	c := e.login(t, 1001, "octo")
 	org := e.org(t, e.user(t, 1001).ID)
 	repo := e.seedRepo(t, org.ID, "acme/web", "main")
 	e.Git.seed(t, "acme/web", "main", webFiles)
+	bare := e.Git.bareDir("acme/web")
+	e.Git.mustGit(t, bare, "branch", otherSessionBranch, "main")
+	e.Git.mustGit(t, bare, "tag", "v1", "main")
 	e.GitHub.addIssue("acme/web", 1, ghIssue{
 		Title: "greet.sh forgets the exclamation mark",
 		Body:  "`sh greet.sh World` prints `Hello, World` but should print `Hello, World!`.",
@@ -159,6 +190,7 @@ func storedEvents(t *testing.T, e *env, id string) []events.Event {
 func TestEndToEnd(t *testing.T) {
 	e := newEnv(t)
 	c, org, repo := fixture(t, e)
+	refsBefore := e.Git.refs(t, "acme/web")
 	model := &scripted{Provider: llmtest.New()}
 	startWorker(t, e, model)
 
@@ -191,6 +223,9 @@ func TestEndToEnd(t *testing.T) {
 
 	model.Push(
 		llmtest.ToolCall("exec_2", "shell_exec", map[string]any{"shell": "main", "command": "sh test.sh"}),
+		// A prompt injection's push: the sandbox's token is read-only.
+		llmtest.ToolCall("push_1", "shell_exec", map[string]any{"shell": "main", "command": sandboxPushes("agent/" + id),
+			"timeout_seconds": 300}),
 		llmtest.ToolCall("pr_1", "open_pr", map[string]any{"title": "Add the missing exclamation mark",
 			"body": "Fixes #1. `sh test.sh` passes."}),
 		llmtest.Text("Fixed greet.sh and opened the pull request."),
@@ -235,6 +270,7 @@ func TestEndToEnd(t *testing.T) {
 		"message.user",
 		"session.status:running",
 		"tool_call.started:shell_exec", "tool_call.output", "tool_call.finished",
+		"tool_call.started:shell_exec", "tool_call.output", "tool_call.finished",
 		"tool_call.started:open_pr", "pr.opened", "tool_call.finished",
 		"message.assistant",
 		"tool_call.started:run_tests", "shell.created", "tool_call.output", "tool_call.finished",
@@ -262,12 +298,26 @@ func TestEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	var out strings.Builder
+	var out, pushOut strings.Builder
 	for _, ev := range all {
 		if ev.Type == events.TypeToolCallOutput {
 			var p events.ToolCallOutputPayload
 			_ = json.Unmarshal(ev.Payload, &p)
 			out.WriteString(p.Chunk)
+			if p.CallID == "push_1" {
+				pushOut.WriteString(p.Chunk)
+			}
+		}
+	}
+	// Every push from the sandbox failed.
+	for _, ev := range all {
+		if ev.Type != events.TypeToolCallFinished {
+			continue
+		}
+		var p events.ToolCallFinishedPayload
+		_ = json.Unmarshal(ev.Payload, &p)
+		if p.CallID == "push_1" && (p.ExitCode != 0 || p.TimedOut || !strings.Contains(pushOut.String(), "ALL-PUSHES-REFUSED")) {
+			t.Errorf("a push from the sandbox succeeded: %+v\n%s", p, pushOut.String())
 		}
 	}
 	if !strings.Contains(out.String(), "token=[redacted]") || !strings.Contains(out.String(), "PASS") {
@@ -288,9 +338,15 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	// The branch was pushed through the credential helper and holds the
-	// fix; the PR was opened by the worker's own token.
+	// The worker pushed the branch, which holds the fix; the PR was
+	// opened by the worker's own token. No other ref changed.
 	branch := "agent/" + id
+	refsAfter := e.Git.refs(t, "acme/web")
+	wantRefs := append(slices.Clone(refsBefore), "refs/heads/"+branch+" "+e.Git.revParse(t, "acme/web", branch))
+	slices.Sort(wantRefs)
+	if !slices.Equal(refsAfter, wantRefs) {
+		t.Errorf("refs after the session:\n%s\nwant\n%s", strings.Join(refsAfter, "\n"), strings.Join(wantRefs, "\n"))
+	}
 	if !slices.Contains(e.Git.branches(t, "acme/web"), branch) {
 		t.Fatalf("branches = %v", e.Git.branches(t, "acme/web"))
 	}
@@ -312,24 +368,55 @@ func TestEndToEnd(t *testing.T) {
 	if final.Repos[0].PRNumber == nil || *final.Repos[0].PRNumber != prs[0].Number || final.FinishedAt == nil {
 		t.Errorf("final session = %+v", final)
 	}
-	// Token scoping: the sandbox tokens carry contents:write only, the
-	// worker's tokens never contents:write; all on acme/web only.
-	var sandboxMints, workerMints int
+	// Token scoping: the sandbox tokens carry contents:read only, the
+	// push tokens contents:write only, the worker's tokens never
+	// contents:write; all on acme/web only.
+	var sandboxMints, workerMints, pushMints int
+	kind := map[string]string{} // token -> sandbox, push or worker
 	for _, m := range e.GitHub.mints() {
 		if !slices.Equal(m.Repositories, []string{"acme/web"}) {
 			t.Errorf("mint scope = %v", m.Repositories)
 		}
 		switch {
-		case len(m.Permissions) == 1 && m.Permissions["contents"] == "write":
+		case len(m.Permissions) == 1 && m.Permissions["contents"] == "read":
 			sandboxMints++
+			kind[m.Token] = "sandbox"
+		case len(m.Permissions) == 1 && m.Permissions["contents"] == "write":
+			pushMints++
+			kind[m.Token] = "push"
 		case m.Permissions["pull_requests"] == "write" && m.Permissions["contents"] == "read":
 			workerMints++
+			kind[m.Token] = "worker"
 		default:
 			t.Errorf("unexpected mint permissions %v", m.Permissions)
 		}
 	}
-	if sandboxMints != 2 || workerMints != 2 {
-		t.Errorf("mints: %d sandbox, %d worker (want 2 each: run + resume)", sandboxMints, workerMints)
+	if sandboxMints != 2 || workerMints != 2 || pushMints != 1 {
+		t.Errorf("mints: %d sandbox, %d worker (want 2 each: run + resume), %d push (want 1: open_pr)", sandboxMints, workerMints, pushMints)
+	}
+	// The git server: the sandbox's tokens were refused every push; only
+	// the push token pushed, from the worker.
+	var sandboxPushReqs, pushed int
+	for _, r := range e.Git.requests() {
+		if !r.Push || r.Token == "" {
+			continue
+		}
+		switch kind[r.Token] {
+		case "sandbox":
+			sandboxPushReqs++
+			if r.Status != http.StatusUnauthorized {
+				t.Errorf("a sandbox token's push request got %d: %+v", r.Status, r)
+			}
+		case "push":
+			if r.Status == http.StatusOK && r.Method == http.MethodPost {
+				pushed++
+			}
+		default:
+			t.Errorf("push request with a %q token: %+v", kind[r.Token], r)
+		}
+	}
+	if sandboxPushReqs == 0 || pushed != 1 {
+		t.Errorf("push requests: %d refused from the sandbox, %d pushes by the worker (want 1)", sandboxPushReqs, pushed)
 	}
 	// Everything minted is revoked when the session parks, right after
 	// the final status.
