@@ -44,6 +44,7 @@ internal/events/pgevents   → events                       Postgres events.Stor
 internal/events/redisbus   → events                       Redis pub/sub events.Bus
 internal/store             → events, events/pgevents, migrations   pgx data layer
 internal/github            → agent (for RepoHost types)   App auth, tokens, OAuth, webhooks,
+                                                          the worker's receive-pack push,
                                                           implements agent.RepoHost
 internal/hooks             → store, github, queue, control, events   webhook processing,
                                                           repo sync, StopSession
@@ -71,13 +72,25 @@ Rules:
 
 The sandbox is untrusted. It runs whatever the repo and the agent run, and users can open shells in it.
 
-- Never inside a sandbox: LLM API keys, the GitHub App private key, the App's OAuth client secret, agent code, prompts or the conversation.
-- Inside a sandbox: the repos at `/workspace/<repo>`, a git credential helper holding a 1-hour installation token scoped to the session's repos with `contents: write` only, and the org's own secrets as env vars.
+- Never inside a sandbox: LLM API keys, the GitHub App private key, the App's OAuth client secret, any GitHub token that can write, agent code, prompts or the conversation.
+- Inside a sandbox: the repos at `/workspace/<repo>`, a git credential helper holding a 1-hour installation token scoped to the session's repos with `contents: read` only, and the org's own secrets as env vars. **The sandbox has read-only GitHub access: it can clone and fetch, and nothing in it can push.**
 - The worker runs every tool call. Shell and file tools become sandbox calls. `read_issue`, `open_pr`, `message_user` and `ask_user` run in the worker with credentials that never reach the sandbox.
-- The agent pushes only to `agent/*` branches. Sandbox egress is allowlisted on Daytona (GitHub and the common package registries); the local docker provider does not enforce it. The agent runs as a non-root user.
+- Only the worker pushes, and only `refs/heads/agent/<session-id>` (see [Pushes](#pushes)). Installation tokens cannot be limited to a branch, so this is enforced by keeping write access out of the sandbox, not by the prompt or `open_pr`: a prompt injection (through `read_issue` or a repo file) or a dependency's install script cannot push to `main`, delete a branch or tag, or force-push another session's branch.
+- Sandbox egress is allowlisted on Daytona (GitHub and the common package registries); the local docker provider does not enforce it. The agent runs as a non-root user.
 - Org and repo secrets are encrypted at rest (envelope encryption under `SECRETS_KEY`) and redacted from every event.
 - Root in the sandbox: the providers run every root command (their own, and the worker's setup) with `/bin/sh` and `PATH=/usr/sbin:/usr/bin:/sbin:/bin` (`sandbox.SystemPath`), so nothing the agent writes, such as `~/.local/bin/kill`, runs as root. Docker sandboxes drop every capability except `CHOWN` and `KILL` and set `no-new-privileges`. In Daytona's own snapshots the default user has passwordless sudo, so there the sandbox user is effectively root.
 - In V1 the GitHub token service is a library (`internal/github`) that the API and worker both call in-process, so both control-plane services hold the App private key. Moving it into its own service is a later hardening step.
+
+What each GitHub credential can do, and where it lives:
+
+| Credential | Where it lives | What it can do |
+|---|---|---|
+| Sandbox token (`github.SandboxPermissions`: `contents: read`), per session, rotated hourly | `/run/keith/git-token` in the sandbox; anything there can read it | Clone and fetch the session's repos. It cannot push, read issues or open PRs. |
+| Push token (`github.PushPermissions`: `contents: write`), one repo, minted per push | The worker's memory, revoked when the push returns | Push to the repo. The worker sends one ref update only, for `refs/heads/agent/<session-id>`. |
+| Worker token (`github.WorkerPermissions`: `contents: read`, `pull_requests: write`, `issues: read`) | The worker's memory | Read issues and open PRs (`read_issue`, `open_pr`) |
+| App private key, OAuth client secret | API and worker | Mint all of the above |
+
+In `keith run --local` one personal access token plays every role (see [Local mode](#local-mode)); a PAT cannot be made read-only, so there the sandbox could push.
 
 ## Event log is the source of truth
 
@@ -110,9 +123,10 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
    - The event emitter checks the lease before every append. pgevents does not check the fencing token, so this closes the fencing gap.
    - The emitter also redacts every payload with a `secrets.Redactor`, built from the session's decrypted org and repo secrets plus the sandbox git token as it rotates. It streams shell output (one stream per shell) and `message.delta` (one stream per message, flushed before its `message.assistant`) through `Redactor.Stream`, so a secret split across chunks or deltas is still caught.
 2. **Provision** (a new session, or one whose sandbox was reaped).
-   - **Two GitHub installation tokens** per session:
-     - *Sandbox token*: `contents: write` on the session's repos only. It reaches the sandbox only as `/run/keith/git-token`, read by the git credential helper. The helper is installed as root at `/usr/local/bin/git-credential-keith` and answers only for `GIT_BASE_URL`'s host. The token file is rewritten from the token source's refresh hook, so the token rotates without re-cloning.
+   - **Two GitHub installation tokens** per session, plus one per push:
+     - *Sandbox token*: `contents: read` on the session's repos only, for clone and fetch; it cannot push. It reaches the sandbox only as `/run/keith/git-token`, read by the git credential helper. The helper is installed as root at `/usr/local/bin/git-credential-keith` and answers only for `GIT_BASE_URL`'s host. The token file is rewritten from the token source's refresh hook, so the token rotates without re-cloning.
      - *Worker token*: `WorkerPermissions`, on the session's repos plus the issue's repo. It backs the `RepoHost` behind `read_issue` and `open_pr`, and never enters the sandbox.
+     - *Push token*: `contents: write` on one repo, minted for each push and revoked when it returns (see [Pushes](#pushes)). It never enters the sandbox.
      - In V1 all of a session's repos must be on one installation. The API refuses to create a session that spans two (`422`); a session whose repos end up on two anyway fails with `repos_span_installations`.
      - A repo the session's org can no longer use (removed from the installation, the App uninstalled, or moved to another org: `SessionRepo.Inaccessible`, or no installation) fails the session with `repo_access_lost` before any token is minted, on a new session and on every resume.
    - **The sandbox** starts from the repo's snapshot (a single-repo session on the same provider) or from the base template (`SANDBOX_TEMPLATE`). Org and repo secrets are its environment variables; a repo secret overrides an org secret of the same name.
@@ -136,7 +150,7 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
 
    | Outcome | What the worker does | Status |
    |---|---|---|
-   | `end_turn` | **Verify:** run each changed repo's test command. On failure, feed the result back to the model as a message and loop again, at most 2 cycles. **Ship:** if there are changes and the agent opened no PR, commit, push and open one itself. | `completed`, or `no_changes` when nothing changed |
+   | `end_turn` | **Verify:** run each changed repo's test command. On failure, feed the result back to the model as a message and loop again, at most 2 cycles. **Ship:** if there are changes and the agent opened no PR, commit in the sandbox, push from the worker (see [Pushes](#pushes)) and open one itself. | `completed`, or `no_changes` when nothing changed |
    | `paused` | Record the open question. | `waiting_for_user` |
    | `cancelled` | Interrupt running commands, clear the open question and the cancel flag. | `cancelled` |
    | `step_cap`, `budget_exceeded`, `failed` (and the time limit) | Emit an `error` event with the reason. | `failed` |
@@ -148,6 +162,25 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
    - release the lease.
 
    A worker that has lost the lease never touches the sandbox again.
+
+### Pushes
+
+The sandbox cannot push (its token is `contents: read`), so every push of a session branch, by `open_pr` (through the `agent.Run.Push` hook) or by the worker's ship, is made by the worker (`internal/worker/push.go`):
+
+1. Mint a push token (`github.PushPermissions`) for the one repo.
+2. Open the remote's `git-receive-pack` over git's smart HTTP protocol (`github.ReceivePack`, no git process) and read the session branch's and the default branch's current commits.
+3. In the sandbox, as the sandbox user: resolve the branch's tip and its remote-tracking ref (the lease), and `git bundle create` the branch, excluding the remote's commits the sandbox has.
+4. Read the bundle (`ReadFileLimit`, at most 100 MiB; larger pushes are refused with a clear error), delete it from the sandbox, and accept it only if it carries exactly one ref, `refs/heads/agent/<session-id>`, at that tip (`github.ParseBundle`).
+5. Send one ref update, `refs/heads/agent/<session-id>` from its current value to the tip, with the bundle's pack. The remote checks the objects and refuses the update if the ref moved meanwhile.
+6. Revoke the push token, and record the push in the sandbox as `git push -u` would (the remote-tracking ref and the upstream).
+
+Guarantees:
+
+- The write token never enters the sandbox. It is sent only in the `Authorization` header of the worker's own requests: never in a git process, argv, URL, environment or error, and redirects are followed only within `GIT_BASE_URL`'s scheme and host.
+- Only `refs/heads/agent/<session-id>` can change. Pushing any other branch (a different `RepoContext.Branch`) is refused before a token is minted, and a bundle naming any other ref is refused.
+- Force-with-lease: the agent may rewrite its own branch, but if the remote branch holds commits the sandbox has not seen (someone else pushed to it), the push is refused until the agent fetches and integrates them, unless this worker task pushed them itself. A branch deleted on the remote is created again.
+
+Both the sandboxes (to clone and fetch) and the worker (to push) must reach `GIT_BASE_URL`. The worker needs no git binary: it speaks the protocol itself.
 
 ### Recovery
 
@@ -184,7 +217,7 @@ A sandbox that cannot be deleted is logged and skipped; it never holds up the re
 - `internal/worker/memstore` in place of Postgres;
 - in-memory events and an in-process lease in place of Redis;
 - the docker provider;
-- one personal access token in place of both App tokens. It reaches the sandbox through the same token file and credential helper, and it also backs the `RepoHost` (`github.NewPATHost`).
+- one personal access token in place of the App tokens. It reaches the sandbox through the same token file and credential helper, for clone and fetch; keith pushes the session branch with it from its own process, the same way as the worker; and it also backs the `RepoHost` (`github.NewPATHost`). A PAT cannot be made read-only, so in a local run anything in the sandbox could push with it: use a fine-grained token limited to the one repo.
 
 ## Agent loop (`internal/agent`)
 
@@ -214,6 +247,7 @@ run := &agent.Run{
 	AfterFileChange: saveDiff, // runs before file.changed
 	OnPROpened: recordPR,      // runs before pr.opened; once per repo
 	Redact: redactSecrets,     // open_pr's PR title, body and commit message
+	Push: pushFromWorker,      // open_pr's push, made outside the sandbox
 }
 run.Shells = tmuxshell.New(sb, tmuxshell.WithOutput(func(shell string, chunk []byte) {
 	emit(events.TypeToolCallOutput, events.ToolCallOutputPayload{

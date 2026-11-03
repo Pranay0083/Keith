@@ -84,7 +84,7 @@ Below, `<api>` is the api's public base URL, the value of `PUBLIC_URL`: for exam
 
      | Permission | Access | Why |
      |---|---|---|
-     | Contents | Read and write | Clone, and push `agent/*` branches |
+     | Contents | Read and write | Clone (sandboxes get a read-only token), and the worker's push of the session's `agent/*` branch |
      | Pull requests | Read and write | Open the PR |
      | Issues | Read-only | `read_issue`, for sessions started from an issue link |
      | Metadata | Read-only | Required by GitHub; selected automatically |
@@ -183,7 +183,7 @@ Keep `SECRETS_KEY` stable and backed up. It encrypts the org and repo secrets st
 | `DAYTONA_API_KEY` | worker | if `daytona` | (none) | Daytona API key. |
 | `DAYTONA_API_URL` | worker | no | the Daytona SDK's default (`https://app.daytona.io/api`) | Daytona API base URL. |
 | `SANDBOX_TEMPLATE` | worker | no | the provider's default | What new sandboxes start from when no repo snapshot applies. Docker: an image (default `keith-sandbox:latest`). Daytona: `snapshot:<name>` or `image:<ref>` (see [Sandboxes in production](#sandboxes-in-production)). |
-| `GIT_BASE_URL` | worker | no | `https://github.com/` | Where sandboxes clone from: `GIT_BASE_URL` + `owner/name.git`. The credential helper answers only for this URL's scheme and host. Change it only for tests or a local git server. |
+| `GIT_BASE_URL` | worker | no | `https://github.com/` | Where sandboxes clone from (`GIT_BASE_URL` + `owner/name.git`) and where the worker pushes the session branch, so both must reach it. The credential helper answers only for this URL's scheme and host. Change it only for tests or a local git server. |
 | `MAX_SESSION_DURATION` | worker | no | `2h` | A Go duration. Caps one run of a session (per wakeup); beyond it, the session fails with `time_limit`. |
 | `MAX_SESSION_TOKENS` | worker | no | `20000000` | Caps a session's cumulative model tokens (input, output, cache reads and writes). `0` turns the cap off. |
 | `SANDBOX_IDLE_TIMEOUT` | worker | no | `30m` | How long a parked sandbox (session finished or waiting for an answer) is kept before the reaper deletes it. A later message then re-provisions it from the pushed branch. |
@@ -312,7 +312,7 @@ The web app still runs with `npm run dev`. Plain `docker compose up -d --wait` (
 Notes for the containerized worker:
 
 - **Sandboxes are siblings, not children.** They run on the host's Docker daemon, so `keith-sandbox:latest` must exist on the host. Their published ports bind to the host's 127.0.0.1.
-- **Leave `GIT_BASE_URL` at `https://github.com/`.** Sandboxes clone from it directly.
+- **Leave `GIT_BASE_URL` at `https://github.com/`.** Sandboxes clone from it directly, and the worker pushes to it.
 - **Socket access.** The image runs as the non-root user `keith` (uid 10001). Compose adds the socket's group (`KEITH_DOCKER_GID`, default `0` for Docker Desktop). On Linux, set `KEITH_DOCKER_GID=$(stat -c %g /var/run/docker.sock)`.
 - **Private key.** `GITHUB_APP_PRIVATE_KEY_PATH` is resolved inside the container, so use the inline `GITHUB_APP_PRIVATE_KEY` form in `.env`, or mount the key.
 
@@ -345,7 +345,7 @@ go run ./cmd/keith run --local --repo owner/name --issue https://github.com/owne
 - **What you see.** It streams the session's events to the terminal: messages, tool calls and shell output. When the agent asks a question, it reads your answer from stdin. At the end it prints the final diff.
 - **`--no-pr`** is a dry run: the agent gets no `open_pr` tool and nothing is pushed.
 - **Other flags:** `--provider anthropic|gemini` and `--model` pick the model; `--install CMD` and `--test CMD` act as the repo profile (setup and the automatic test run); `--keep` keeps the (paused) sandbox for inspection instead of deleting it; `--json` prints raw events as JSON lines; `-v` shows the worker's logs. Ctrl-C stops the session gracefully, a second Ctrl-C aborts.
-- **The PAT reaches the sandbox.** It goes in through the same path as an App token: the file `/run/keith/git-token`, read by the git credential helper. The same token also reads the issue and opens the PR, so, unlike with the App, there is no separate worker-only token. Anything running in the sandbox can read it, which is why it should be fine-grained, limited to one repo and short-lived.
+- **The PAT reaches the sandbox.** It goes in through the same path as an App token: the file `/run/keith/git-token`, read by the git credential helper, for cloning. `keith` pushes the session branch itself, from its own process, and the same token also reads the issue and opens the PR. Unlike with the App, where the sandbox only ever gets a read-only token, a PAT cannot be made read-only for the sandbox: anything running there can read it and push with it. That is why it should be fine-grained, limited to one repo and short-lived.
 - **Needs** Docker and the `keith-sandbox:latest` image. To use Gemini, set `DEFAULT_LLM_PROVIDER=gemini`, `GEMINI_API_KEY` and `DEFAULT_MODEL`.
 
 ## Tests
