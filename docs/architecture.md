@@ -161,6 +161,8 @@ Every minute, the reaper deletes:
 - the sandboxes of sessions parked (terminal or `waiting_for_user`) for longer than `SANDBOX_IDLE_TIMEOUT`, checked under the session's lease;
 - orphaned docker containers: labelled `keith.role=worker` (set by docker-provider workers), referenced by no session, and older than a grace period (10 minutes) that covers the moment between create and record.
 
+A sandbox that cannot be deleted is logged and skipped; it never holds up the rest of the pass. The reaper keeps the session's lease alive while it deletes, and then clears `sessions.sandbox_id` only if it still names the deleted sandbox (compare-and-set), so a sandbox another worker recorded meanwhile is never forgotten.
+
 ### Local mode
 
 `keith run --local` runs the same session code in one process:

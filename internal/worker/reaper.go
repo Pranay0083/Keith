@@ -28,9 +28,11 @@ func (w *Worker) RunReaper(ctx context.Context) {
 	t := time.NewTicker(w.o.ReapInterval)
 	defer t.Stop()
 	for {
-		if n, err := w.Reap(ctx); err != nil && ctx.Err() == nil {
+		n, err := w.Reap(ctx)
+		if err != nil && ctx.Err() == nil {
 			w.log.Warn("reap sandboxes", "err", err)
-		} else if n > 0 {
+		}
+		if n > 0 {
 			w.log.Info("reaped sandboxes", "count", n)
 		}
 		select {
@@ -44,14 +46,13 @@ func (w *Worker) RunReaper(ctx context.Context) {
 // Reap runs one pass: it deletes the sandboxes of sessions parked
 // (terminal or waiting_for_user) for longer than IdleTimeout, then
 // orphaned sandboxes (see Options.OrphanLabels). It returns how many it
-// deleted.
+// deleted. A sandbox that cannot be deleted is logged and skipped, so
+// it never holds up the others; the error is only for a pass that could
+// not run at all.
 func (w *Worker) Reap(ctx context.Context) (int, error) {
-	n, err := w.reapIdle(ctx)
-	if err != nil {
-		return n, err
-	}
-	m, err := w.reapOrphans(ctx)
-	return n + m, err
+	n, ierr := w.reapIdle(ctx)
+	m, oerr := w.reapOrphans(ctx)
+	return n + m, errors.Join(ierr, oerr)
 }
 
 func (w *Worker) reapIdle(ctx context.Context) (int, error) {
@@ -62,22 +63,18 @@ func (w *Worker) reapIdle(ctx context.Context) (int, error) {
 	}
 	n := 0
 	for _, x := range sessions {
+		if err := ctx.Err(); err != nil {
+			return n, err
+		}
 		if x.SandboxProvider != w.d.Sandboxes.Name() {
 			continue
 		}
-		l, err := w.d.Leases.Acquire(ctx, lease.SessionKey(x.ID), w.o.LeaseTTL)
-		if errors.Is(err, lease.ErrHeld) {
-			continue // a worker is on it
-		}
+		ok, err := w.reapLeased(ctx, x.ID, x.SandboxID, cutoff)
 		if err != nil {
-			return n, err
-		}
-		ok, err := w.reapOne(ctx, x.ID, x.SandboxID, cutoff)
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		_ = l.Release(rctx)
-		cancel()
-		if err != nil {
-			return n, err
+			if ctx.Err() == nil {
+				w.log.Warn("reap an idle sandbox; skipping it", "session_id", x.ID, "sandbox_id", x.SandboxID, "err", err)
+			}
+			continue
 		}
 		if ok {
 			n++
@@ -86,8 +83,37 @@ func (w *Worker) reapIdle(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// reapLeased runs reapOne under the session's lease, kept alive while
+// the delete runs. A session another worker holds is skipped.
+func (w *Worker) reapLeased(ctx context.Context, sessionID, sandboxID string, cutoff time.Time) (bool, error) {
+	l, err := w.d.Leases.Acquire(ctx, lease.SessionKey(sessionID), w.o.LeaseTTL)
+	if errors.Is(err, lease.ErrHeld) {
+		return false, nil // a worker is on it
+	}
+	if err != nil {
+		return false, err
+	}
+	lctx, cancel := context.WithCancelCause(ctx)
+	kaDone := make(chan struct{})
+	go func() {
+		defer close(kaDone)
+		for err := range l.KeepAlive(lctx) {
+			cancel(err)
+		}
+	}()
+	ok, err := w.reapOne(lctx, sessionID, sandboxID, cutoff)
+	cancel(nil)
+	<-kaDone
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	_ = l.Release(rctx)
+	rcancel()
+	return ok, err
+}
+
 // reapOne deletes a session's sandbox if, under the lease, the session
-// is still parked on it since before cutoff.
+// is still parked on it since before cutoff. It then clears the
+// session's sandbox only if it is still that one (compare-and-set), so
+// a sandbox another worker recorded meanwhile is kept.
 func (w *Worker) reapOne(ctx context.Context, sessionID, sandboxID string, cutoff time.Time) (bool, error) {
 	cur, err := w.d.Store.GetSession(ctx, sessionID)
 	if err != nil {
@@ -107,10 +133,15 @@ func (w *Worker) reapOne(ctx context.Context, sessionID, sandboxID string, cutof
 			return false, err
 		}
 	}
-	if err := w.d.Store.SetSessionSandbox(ctx, sessionID, "", ""); err != nil {
+	cleared, err := w.d.Store.ClearSessionSandbox(ctx, sessionID, sandboxID)
+	if err != nil {
 		return false, err
 	}
-	w.log.Info("deleted an idle sandbox", "session_id", sessionID, "sandbox_id", sandboxID)
+	if !cleared {
+		w.log.Info("deleted an idle sandbox; the session has moved to another one", "session_id", sessionID, "sandbox_id", sandboxID)
+	} else {
+		w.log.Info("deleted an idle sandbox", "session_id", sessionID, "sandbox_id", sandboxID)
+	}
 	return true, nil
 }
 
