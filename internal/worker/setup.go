@@ -93,7 +93,7 @@ func (s *session) setup(ctx context.Context, snap store.Snapshot) error {
 	if s.stop.Load() {
 		return nil
 	}
-	if len(s.repos) == 1 && ran && allOK && hash != "" && hash != snap.LockHash {
+	if !s.w.o.NoSnapshot && len(s.repos) == 1 && ran && allOK && hash != "" && hash != snap.LockHash {
 		s.snapshot(ctx, s.repos[0], hash)
 	}
 	return nil

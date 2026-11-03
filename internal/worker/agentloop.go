@@ -372,6 +372,11 @@ func (s *session) ship(ctx context.Context, finalText string) error {
 		}
 		anything = true
 		if s.w.o.NoPR {
+			// Nothing is pushed; save the final diff, which also covers
+			// changes made with shell commands.
+			if err := s.saveDiff(ctx, r); err != nil {
+				return s.interruptedOr(ctx, err)
+			}
 			continue
 		}
 		if err := s.shipRepo(ctx, r, ch, hasPR, finalText); err != nil {

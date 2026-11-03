@@ -821,6 +821,23 @@ func TestNoPRMode(t *testing.T) {
 	if e.st.Session(s.ID).Status != events.StatusCompleted {
 		t.Errorf("status = %s", e.st.Session(s.ID).Status)
 	}
+	if d := e.st.Diffs(s.ID); len(d) != 1 || !strings.Contains(d[0].Diff, "+hello") {
+		t.Errorf("NoPR final diff = %+v", d)
+	}
+}
+
+func TestNoSnapshotOption(t *testing.T) {
+	e := newEnv(t)
+	e.opts.NoSnapshot = true
+	e.profile(store.RepoProfile{RepoID: testRepo, InstallCmd: "npm ci"})
+	s := e.newSession()
+	e.llm.Push(llmtest.Text("done"))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if callsHave(e.sandbox(s.ID), memsandbox.OpSnapshot) {
+		t.Error("snapshotted with NoSnapshot")
+	}
 }
 
 func TestResumeReprovisionsAReapedSandbox(t *testing.T) {

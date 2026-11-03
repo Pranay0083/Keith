@@ -135,6 +135,9 @@ type Options struct {
 	// NoPR is for local dry runs: the agent gets no open_pr tool and the
 	// worker opens no pull request.
 	NoPR bool
+	// NoSnapshot turns repo snapshots off (one-off local runs, where
+	// nothing would reuse them).
+	NoSnapshot bool
 }
 
 // OptionsFromConfig returns the Options the configuration sets.
