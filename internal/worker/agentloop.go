@@ -260,7 +260,7 @@ func (s *session) agentLoop(ctx context.Context) error {
 				fmt.Sprintf("The agent made %d model calls without finishing and was stopped. Send a message to let it continue.", out.Steps))
 		case agent.OutcomeBudgetExceeded:
 			return s.fail(ctx, ReasonBudgetExceeded,
-				"The session used up its token budget. Send a message to continue, or raise MAX_SESSION_TOKENS.")
+				"The session used up its token budget (MAX_SESSION_TOKENS, which counts the whole session). A follow-up message stops the same way until the budget is raised; start a new session to carry on.")
 		default:
 			msg := "The agent stopped: " + out.Reason
 			if out.Err != nil {

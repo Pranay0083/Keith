@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Pranay0083/keith/internal/events"
@@ -29,5 +30,30 @@ func TestShipChecksHEADIsTheSessionBranch(t *testing.T) {
 	}
 	if prs := e.gh.host.PRRequests(); len(prs) != 0 {
 		t.Errorf("PRs = %+v", prs)
+	}
+}
+
+// budget_exceeded is cumulative per session, so a follow-up message
+// fails the same way (a known limitation): the failure message must not
+// tell the user to send one to continue.
+func TestBudgetExceededDoesNotSuggestAFollowUp(t *testing.T) {
+	e := newEnv(t)
+	e.opts.MaxSessionTokens = 10 // one model call (15 tokens) uses it up
+	s := e.newSession()
+	e.llm.Push(toolCall("c1", "message_user", map[string]any{"text": "working"}))
+	e.llm.Push(llmtest.Text("more"))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if x := e.st.Session(s.ID); x.StatusReason != ReasonBudgetExceeded {
+		t.Fatalf("session = %s/%s", x.Status, x.StatusReason)
+	}
+	errs := e.events(s.ID, events.TypeError)
+	if len(errs) != 1 {
+		t.Fatalf("error events = %d", len(errs))
+	}
+	msg := payload[events.ErrorPayload](t, errs[0]).Message
+	if strings.Contains(msg, "Send a message to continue") || !strings.Contains(msg, "MAX_SESSION_TOKENS") {
+		t.Errorf("budget message = %q", msg)
 	}
 }
