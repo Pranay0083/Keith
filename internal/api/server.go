@@ -119,13 +119,19 @@ type Server struct {
 	secure  bool // Secure cookie attribute
 	webURL  *url.URL
 
+	upgrader       wsUpgrader
+	wsRecheckEvery time.Duration // 0 means wsRecheckEvery
+	wsPingEvery    time.Duration // 0 means wsPingEvery
+
 	slugMu sync.Mutex
 	slug   string
 
 	// shutdown is closed by Shutdown, to close WebSockets with 1001.
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	wsWG         sync.WaitGroup
+	// wsMu orders wsWG.Add against Shutdown's Wait.
+	shutdown chan struct{}
+	wsMu     sync.Mutex
+	closing  bool
+	wsWG     sync.WaitGroup
 }
 
 // New checks deps and returns a Server.
@@ -179,6 +185,7 @@ func New(d Deps) (*Server, error) {
 	}
 	// Secure cookies, except for plain-http local development.
 	s.secure = !strings.HasPrefix(d.Config.PublicURL, "http://")
+	s.upgrader = newUpgrader(d.Config.WebOrigin)
 	return s, nil
 }
 
@@ -216,6 +223,7 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/sessions/{id}/answers", s.handlePostAnswer)
 	api("POST /api/sessions/{id}/stop", s.handleStop)
 	api("GET /api/sessions/{id}/diff", s.handleDiff)
+	api("GET /api/sessions/{id}/events", s.handleEvents)
 	mux.Handle("OPTIONS /api/", s.cors(http.HandlerFunc(preflight)))
 	api("/api/", func(http.ResponseWriter, *http.Request) error { return errNotFound })
 
@@ -226,7 +234,12 @@ func (s *Server) Handler() http.Handler {
 // them, up to ctx. Call it after http.Server.Shutdown has stopped new
 // requests: hijacked connections are not tracked by http.Server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.shutdownOnce.Do(func() { close(s.shutdown) })
+	s.wsMu.Lock()
+	if !s.closing {
+		s.closing = true
+		close(s.shutdown)
+	}
+	s.wsMu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		s.wsWG.Wait()

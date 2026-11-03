@@ -9,5 +9,4 @@ package deps
 
 import (
 	_ "github.com/daytona/clients/sdk-go/pkg/daytona"
-	_ "github.com/gorilla/websocket"
 )
