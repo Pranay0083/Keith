@@ -425,6 +425,12 @@ The worker emits events so that these hold:
 - `pr.opened` is emitted once per repo, after `session_repos.pr_number` and `pr_url` are set.
 - Secret values never appear in any payload.
 
+The worker's own steps look like agent steps, so the UI needs nothing special for them:
+
+- Setup and verification run as tool calls named `setup` (a repo's install command) and `run_tests` (its test command), in shells named `setup` and `verify`; their `call_id`s start with `keith_`. `input` is `{repo, command}`.
+- A `message.user` whose `message_id` starts with `m_keith` comes from the worker, not from `POST /messages`: the session's prompt (with the creator's `user_id`), or a note to the agent such as a failed automatic test run (no `user_id`).
+- The worker opens the pull request itself (`pr.opened`, no surrounding tool call) when the agent ended its turn with changes but no PR.
+
 ### Client behaviour (*informative*)
 
 - The client remembers the highest stored `seq` it applied and reconnects with `after_seq` set to it.
