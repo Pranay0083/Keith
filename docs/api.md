@@ -435,6 +435,7 @@ The worker's own steps look like agent steps, so the UI needs nothing special fo
 
 - The client remembers the highest stored `seq` it applied and reconnects with `after_seq` set to it.
 - It drops any stored event with `seq ≤` that value, and applies stored events strictly in `seq` order, buffering any that arrive ahead of a gap. If a gap persists for 3 seconds it reconnects to refill it.
+- A stored event whose `type` it doesn't know (a newer server), or whose `payload` isn't an object, still takes its place in `seq` order: the client skips it and moves on, rather than waiting for that `seq` forever. It ignores an unknown live-only event.
 - Reconnect delay is `min(15 s, 0.5 s × 2^attempt)`, scaled by a random factor in [0.5, 1). The attempt counter resets once a connection has stayed open for 5 seconds.
 - After a failed connection the client calls `GET /api/sessions/{id}`: `401` sends it to the login page, `403`/`404` stops reconnecting, anything else keeps retrying.
 

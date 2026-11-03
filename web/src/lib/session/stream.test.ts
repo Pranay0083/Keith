@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SocketLike } from "@/lib/api/api";
-import type { SessionEvent } from "@/lib/api/events";
+import type { SessionEvent, StreamEvent } from "@/lib/api/events";
 import { backoffDelay, DEFAULT_BACKOFF } from "./backoff";
 import type { ConnectionState } from "./reducer";
 import { EventStream, type ProbeResult, type Timers } from "./stream";
@@ -65,7 +65,7 @@ function event(seq: number): SessionEvent {
 function setup(opts: { probe?: () => Promise<ProbeResult>; random?: () => number } = {}) {
   const timers = new FakeTimers();
   const sockets: FakeSocket[] = [];
-  const events: SessionEvent[] = [];
+  const events: StreamEvent[] = [];
   const states: ConnectionState[] = [];
   let lastSeq = 0;
   const stream = new EventStream({
@@ -131,9 +131,13 @@ describe("EventStream", () => {
     expect(t.states.at(-1)).toEqual({ state: "open" });
     t.last().send(event(42));
     t.last().send("not json");
-    t.last().send({ session_id: "s", seq: 43, ts: "x", type: "unknown.type", payload: {} });
     t.last().send({ session_id: "s", seq: -1, ts: "x", type: "error", payload: {} });
+    t.last().send({ session_id: "s", seq: 0, ts: "x", type: "message.thinking", payload: {} });
     expect(t.events.map((e) => e.seq)).toEqual([42]);
+
+    // A stored event of a type this build doesn't know still takes its seq.
+    t.last().send({ session_id: "s", seq: 43, ts: "x", type: "unknown.type", payload: {} });
+    expect(t.events.at(-1)).toEqual({ session_id: "s", seq: 43, ts: "x", type: "unknown.type", skipped: true });
   });
 
   it("reconnects with backoff and resumes from the newest seq", () => {

@@ -1,6 +1,6 @@
 import { parseDiff } from "react-diff-view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseEvent, type SessionEvent } from "../events";
+import { isSkipped, parseEvent, type SessionEvent } from "../events";
 import { applyEvent, initialSessionState, openQuestion, type SessionState } from "@/lib/session/reducer";
 import { fileDiff } from "./unidiff";
 
@@ -23,7 +23,7 @@ function watch(api: Awaited<ReturnType<typeof load>>, id: string, afterSeq = 0) 
   const sock = api.openEvents(id, afterSeq);
   sock.onmessage = (data) => {
     const e = parseEvent(data);
-    if (!e) throw new Error(`bad frame: ${data}`);
+    if (!e || isSkipped(e)) throw new Error(`bad frame: ${data}`);
     seen.push(e);
     state = applyEvent(state, e);
   };

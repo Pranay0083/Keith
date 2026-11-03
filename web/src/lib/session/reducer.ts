@@ -3,19 +3,22 @@
 // The UI renders only from SessionState. Events go through applyEvent,
 // which applies stored events exactly once and in seq order (a duplicate is
 // dropped; an event that arrives ahead of a gap waits in `ahead` until the
-// gap fills) and applies ephemeral message.delta events as they come. The
-// few local actions (an optimistic message, connection status, dismissing
-// errors) go through sessionReducer, which also accepts event batches.
+// gap fills; one this build can't read only advances seq) and applies
+// ephemeral message.delta events as they come. The few local actions (an
+// optimistic message, connection status, dismissing errors) go through
+// sessionReducer, which also accepts event batches.
 //
 // Everything here is pure: same state and input, same output, no clocks.
 
 import {
   isEphemeral,
   isSessionStatus,
+  isSkipped,
   isTerminal,
   type FileActionName,
   type SessionEvent,
   type SessionStatusName,
+  type StreamEvent,
 } from "@/lib/api/events";
 import type { Session } from "@/lib/api/types";
 
@@ -120,7 +123,7 @@ export interface SessionState {
   /** The highest stored seq applied; everything at or below it is applied. */
   lastSeq: number;
   /** Stored events received ahead of a gap, sorted by seq. */
-  ahead: SessionEvent[];
+  ahead: StreamEvent[];
 
   status: SessionStatusName | null;
   statusReason: string;
@@ -177,13 +180,14 @@ export function initialSessionState(sessionId: string): SessionState {
 /**
  * Applies one event received from the stream. Stored events are deduped by
  * seq and applied in seq order; message.delta (seq 0) applies immediately.
+ * A skipped event takes its place in seq order but changes nothing else.
  * Events for another session are ignored.
  */
-export function applyEvent(state: SessionState, event: SessionEvent): SessionState {
+export function applyEvent(state: SessionState, event: StreamEvent): SessionState {
   if (!sameId(event.session_id, state.sessionId)) return state;
 
   if (event.seq === 0) {
-    return isEphemeral(event.type) ? fold(state, event) : state;
+    return isEphemeral(event.type) && !isSkipped(event) ? fold(state, event) : state;
   }
   if (isEphemeral(event.type)) return state; // an ephemeral type never carries a seq
   if (event.seq <= state.lastSeq) return state; // already applied
@@ -194,24 +198,28 @@ export function applyEvent(state: SessionState, event: SessionEvent): SessionSta
     return { ...state, ahead };
   }
 
-  let next = { ...fold(state, event), lastSeq: event.seq };
+  let next = applyStored(state, event);
   // Drain whatever the gap was holding back.
   if (next.ahead.length > 0) {
     let ahead = next.ahead;
     while (ahead.length > 0 && ahead[0]!.seq <= next.lastSeq + 1) {
       const [head, ...rest] = ahead;
       ahead = rest;
-      if (head!.seq === next.lastSeq + 1) {
-        next = { ...fold(next, head!), lastSeq: head!.seq };
-      }
+      if (head!.seq === next.lastSeq + 1) next = applyStored(next, head!);
     }
     next = { ...next, ahead };
   }
   return next;
 }
 
+/** Applies the next stored event, the one at lastSeq + 1. */
+function applyStored(state: SessionState, event: StreamEvent): SessionState {
+  const next = isSkipped(event) ? state : fold(state, event);
+  return { ...next, lastSeq: event.seq };
+}
+
 /** Applies events in order with applyEvent. */
-export function applyEvents(state: SessionState, events: readonly SessionEvent[]): SessionState {
+export function applyEvents(state: SessionState, events: readonly StreamEvent[]): SessionState {
   let s = state;
   for (const e of events) s = applyEvent(s, e);
   return s;
@@ -525,7 +533,7 @@ function capTail(s: string, cap: number): string {
 // --- Local actions ---
 
 export type SessionAction =
-  | { type: "events"; events: SessionEvent[] }
+  | { type: "events"; events: StreamEvent[] }
   /** The session detail from REST; it only fills in what events have not. */
   | { type: "session_loaded"; session: Session }
   /** A message or answer the API accepted, shown as pending until its event arrives. */

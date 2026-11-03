@@ -4,7 +4,7 @@
 // knows nothing about React; useSessionEvents wires it to the reducer.
 
 import type { SocketLike } from "@/lib/api/api";
-import { parseEvent, type SessionEvent } from "@/lib/api/events";
+import { parseEvent, type StreamEvent } from "@/lib/api/events";
 import { backoffDelay, DEFAULT_BACKOFF, type BackoffOptions } from "./backoff";
 import type { ConnectionState } from "./reducer";
 
@@ -21,7 +21,7 @@ export interface EventStreamOptions {
   connect(afterSeq: number): SocketLike;
   /** The highest stored seq the UI has applied. */
   lastSeq(): number;
-  onEvent(event: SessionEvent): void;
+  onEvent(event: StreamEvent): void;
   onConnection(state: ConnectionState): void;
   /**
    * Called when a socket closes without ever opening, which is how a browser

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { EventPayloadMap, EventType, SessionEvent } from "@/lib/api/events";
+import { parseEvent, type EventPayloadMap, type EventType, type SessionEvent, type StreamEvent } from "@/lib/api/events";
 import type { Session } from "@/lib/api/types";
 import {
   applyEvent,
@@ -123,6 +123,38 @@ describe("seq ordering and dedupe", () => {
     const s = applyEvent(fresh(), ev(1, "message.delta", { message_id: "a1", text: "x" }));
     expect(s.chat).toHaveLength(0);
     expect(s.lastSeq).toBe(0);
+  });
+});
+
+describe("stored events this build can't read", () => {
+  // Frames as the server sends them, through the same parser the stream uses.
+  const frame = (seq: number, type: string, payload: unknown) =>
+    parseEvent(JSON.stringify({ session_id: SID, seq, ts: "2026-11-02T10:00:00Z", type, payload }))!;
+  const log: StreamEvent[] = [
+    frame(1, "message.user", { message_id: "m_keithprompt", text: "Fix it" }),
+    frame(2, "sandbox.ready", { id: "x" }), // a type newer than this client
+    frame(3, "session.status", { status: "running" }),
+    frame(4, "error", null), // a known type with no payload
+    frame(5, "message.assistant", { message_id: "msg_1", text: "Done" }),
+  ];
+
+  it("skips them in seq order instead of waiting on their seq forever", () => {
+    const s = applyEvents(fresh(), log);
+    expect(s.lastSeq).toBe(5);
+    expect(hasGap(s)).toBe(false); // so the gap watchdog never reconnects
+    expect(s.status).toBe("running");
+    expect(s.errors).toEqual([]);
+    expect(messages(s).map((m) => m.id)).toEqual(["m_keithprompt", "msg_1"]);
+  });
+
+  it("holds one that arrives ahead of a gap, like any other stored event", () => {
+    let s = applyEvents(fresh(), [log[2]!, log[1]!]);
+    expect(s.lastSeq).toBe(0);
+    expect(s.ahead.map((e) => e.seq)).toEqual([2, 3]);
+    s = applyEvents(s, [log[0]!, ...log]); // the gap fills, then a resync replays it all
+    expect(s.lastSeq).toBe(5);
+    expect(hasGap(s)).toBe(false);
+    expect(messages(s)).toHaveLength(2);
   });
 });
 

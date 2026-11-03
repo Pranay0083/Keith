@@ -84,6 +84,26 @@ export type SessionEvent = {
 /** The raw wire shape, before the type is checked. */
 export type RawEvent = gen.Event;
 
+/**
+ * A stored event this client can't use: its type is newer than this build,
+ * or its payload is not an object. Its seq still counts, so the reducer
+ * applies it as a no-op rather than waiting forever for that seq.
+ */
+export interface SkippedEvent {
+  session_id: string;
+  seq: number;
+  ts: string;
+  type: string;
+  skipped: true;
+}
+
+/** What the event stream delivers: an event to apply, or a stored one to skip. */
+export type StreamEvent = SessionEvent | SkippedEvent;
+
+export function isSkipped(e: StreamEvent): e is SkippedEvent {
+  return "skipped" in e;
+}
+
 /** Ephemeral events are published but never stored, and carry seq 0. */
 export function isEphemeral(type: string): boolean {
   return type === gen.TypeMessageDelta;
@@ -105,11 +125,13 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
 ]);
 
 /**
- * Parses one WebSocket frame into an event. It returns null for anything
- * that is not a well-formed event of a known type, so an older client keeps
- * working when the server adds event types.
+ * Parses one WebSocket frame into an event. It returns null for a frame
+ * that is not a well-formed event envelope. A stored event (seq > 0) of a
+ * type this build doesn't know, or with no payload object, comes back as a
+ * SkippedEvent: the server adding event types must not stall an older
+ * client on the seq it can't read. A live-only one is dropped (null).
  */
-export function parseEvent(data: string): SessionEvent | null {
+export function parseEvent(data: string): StreamEvent | null {
   let v: unknown;
   try {
     v = JSON.parse(data);
@@ -124,14 +146,15 @@ export function parseEvent(data: string): SessionEvent | null {
     !Number.isInteger(e.seq) ||
     e.seq < 0 ||
     typeof e.ts !== "string" ||
-    typeof e.type !== "string" ||
-    !KNOWN_TYPES.has(e.type) ||
-    typeof e.payload !== "object" ||
-    e.payload === null
+    typeof e.type !== "string"
   ) {
     return null;
   }
-  return e as SessionEvent;
+  const { session_id, seq, ts, type, payload } = e;
+  if (!KNOWN_TYPES.has(type) || typeof payload !== "object" || payload === null) {
+    return seq > 0 ? { session_id, seq, ts, type, skipped: true } : null;
+  }
+  return { session_id, seq, ts, type, payload } as SessionEvent;
 }
 
 // --- Drift checks: these fail type-checking, not at runtime. ---

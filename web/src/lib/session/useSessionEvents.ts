@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, type Dispatch } from "react";
 import { getApi, isApiError } from "@/lib/api/client";
-import type { SessionEvent } from "@/lib/api/events";
+import type { StreamEvent } from "@/lib/api/events";
 import { hasGap, initialSessionState, sessionReducer, type SessionAction, type SessionState } from "./reducer";
 import { EventStream, type ProbeResult } from "./stream";
 
@@ -38,7 +38,7 @@ export function useSessionEvents(sessionId: string): SessionEvents {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const queue: SessionEvent[] = [];
+    const queue: StreamEvent[] = [];
 
     const flush = () => {
       timer = null;
