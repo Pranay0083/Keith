@@ -200,6 +200,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /auth/logout", s.browserAPI(s.handle(s.handleLogout)))
 	mux.Handle("OPTIONS /auth/logout", s.cors(http.HandlerFunc(preflight)))
 	mux.HandleFunc("GET /github/setup", s.handleSetup)
+	mux.HandleFunc("POST /hooks/github", s.handleWebhook)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	// JSON API: CORS, CSRF, body checks, then the session cookie.
