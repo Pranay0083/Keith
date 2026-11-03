@@ -19,6 +19,7 @@ import {
   type SessionState,
 } from "@/lib/session/reducer";
 import { useSessionEvents } from "@/lib/session/useSessionEvents";
+import { useMe } from "../app-shell";
 import { ChevronIcon, ExternalIcon, PullRequestIcon, StopIcon } from "../icons";
 import { RelativeTime } from "../time";
 import { Banner, Button, EmptyState, LinkButton, Spinner, StatusBadge } from "../ui";
@@ -32,6 +33,7 @@ import { followTab, Workspace, type TabId } from "./workspace";
 
 export function SessionView({ id }: { id: string }) {
   const { state, dispatch, retry } = useSessionEvents(id);
+  const me = useMe();
   const [session, setSession] = useState<Session | null>(null);
   const [loadError, setLoadError] = useState<{ status: number; message: string } | null>(null);
   const [reload, setReload] = useState(0);
@@ -222,6 +224,7 @@ export function SessionView({ id }: { id: string }) {
                 ? "Waiting for a worker to pick up this task…"
                 : "The agent is getting started…"
             }
+            viewer={{ meId: me?.user.id ?? null, creator: session?.created_by ?? null }}
           />
           {step ? (
             <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1.5 text-xs" role="status">

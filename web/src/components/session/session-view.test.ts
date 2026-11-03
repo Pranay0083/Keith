@@ -30,7 +30,11 @@ const h = vi.hoisted(() => {
     finished_at: null,
     repos: [],
   };
-  return { sockets, detail, stopCalls: 0 };
+  const me = {
+    user: { id: "u_me", login: "octocat", name: "Mona", avatar_url: "" },
+    orgs: [{ id: "o1", name: "acme", role: "owner" }],
+  };
+  return { sockets, detail, me, stopCalls: 0 };
 });
 
 vi.mock("@/lib/api/client", () => {
@@ -45,6 +49,8 @@ vi.mock("@/lib/api/client", () => {
     }
   }
   const impl = {
+    me: async () => h.me,
+    logout: async () => {},
     getSession: async () => ({ ...h.detail }),
     stop: async () => {
       h.stopCalls++;
@@ -67,6 +73,10 @@ vi.mock("@/lib/api/client", () => {
     isMock: false,
   };
 });
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace() {}, push() {} }),
+  usePathname: () => "/sessions/x",
+}));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: unknown }) =>
     createElement("a", { href: String(href), ...rest }, children as never),
@@ -75,6 +85,7 @@ vi.mock("next/link", () => ({
 vi.mock("@/components/session/terminal", () => ({ TerminalView: () => null }));
 vi.mock("@/components/session/diff-view", () => ({ DiffView: () => null }));
 
+const { AppShell } = await import("@/components/app-shell");
 const { SessionView } = await import("@/components/session/session-view");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -101,13 +112,13 @@ beforeEach(async () => {
   document.body.appendChild(host);
   root = createRoot(host);
   await act(async () => {
-    root.render(createElement(SessionView, { id: SID }));
+    root.render(createElement(AppShell, null, createElement(SessionView, { id: SID })));
     await wait(10);
   });
   const sock = h.sockets.at(-1)!;
   await act(async () => {
     sock.onopen!();
-    sock.onmessage!(frame(1, "message.user", { message_id: "m_keithprompt", text: "Fix it" }));
+    sock.onmessage!(frame(1, "message.user", { message_id: "m_keithprompt", user_id: "u_me", text: "Fix it" }));
     sock.onmessage!(frame(2, "session.status", { status: "running" }));
     await wait(40);
   });
@@ -173,5 +184,21 @@ describe("StopControl", () => {
     await click(buttons("Stop run")[0]!);
     expect(h.stopCalls).toBe(2);
     expect(buttons("Stopping…")).toHaveLength(1);
+  });
+});
+
+describe("Chat", () => {
+  /** The name above each chat message, in order. */
+  const authors = () =>
+    [...document.querySelectorAll('[role="log"] article > header > span:first-child')].map((el) => el.textContent);
+
+  it("says who wrote each message, using /api/me", async () => {
+    await send(
+      frame(3, "message.assistant", { message_id: "msg_1", text: "Running the tests." }),
+      frame(4, "message.user", { message_id: "m_keith0123", text: "The automatic test run failed:" }),
+      frame(5, "message.user", { message_id: "m_9", user_id: "u_other", text: "Use dayjs" }),
+      frame(6, "message.user", { message_id: "m_10", user_id: "u_me", text: "Thanks" }),
+    );
+    expect(authors()).toEqual(["You", "Keith", "Keith", "A teammate", "You"]);
   });
 });

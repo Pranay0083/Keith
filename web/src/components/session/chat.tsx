@@ -4,6 +4,7 @@ import type { ChatItem, ChatMessage, ChatQuestion } from "@/lib/session/reducer"
 import { cx } from "@/lib/cx";
 import { QuestionIcon } from "../icons";
 import { RelativeTime } from "../time";
+import { messageAuthor, type ChatViewer } from "./format";
 import { useStickToBottom } from "./hooks";
 import { RichText } from "./rich-text";
 
@@ -11,9 +12,10 @@ export interface ChatProps {
   items: ChatItem[];
   /** Shown when there are no items yet. */
   emptyText: string;
+  viewer: ChatViewer;
 }
 
-export function Chat({ items, emptyText }: ChatProps) {
+export function Chat({ items, emptyText, viewer }: ChatProps) {
   const last = items[items.length - 1];
   const tick = `${items.length}:${last?.kind === "message" ? last.text.length : ""}:${last && "pending" in last ? last.pending : ""}`;
   const { ref, onScroll } = useStickToBottom<HTMLDivElement>(tick);
@@ -34,7 +36,11 @@ export function Chat({ items, emptyText }: ChatProps) {
           {items.map((item) =>
             item.kind === "message" ? (
               <li key={`m:${item.id}`}>
-                <Message msg={item} answers={item.questionId ? questions.get(item.questionId) : undefined} />
+                <Message
+                  msg={item}
+                  author={messageAuthor(item, viewer)}
+                  answers={item.questionId ? questions.get(item.questionId) : undefined}
+                />
               </li>
             ) : (
               <li key={`q:${item.id}`}>
@@ -48,7 +54,7 @@ export function Chat({ items, emptyText }: ChatProps) {
   );
 }
 
-function Message({ msg, answers }: { msg: ChatMessage; answers?: ChatQuestion }) {
+function Message({ msg, author, answers }: { msg: ChatMessage; author: string; answers?: ChatQuestion }) {
   const user = msg.role === "user";
   return (
     <article
@@ -60,7 +66,7 @@ function Message({ msg, answers }: { msg: ChatMessage; answers?: ChatQuestion })
       )}
     >
       <header className="mb-0.5 flex items-baseline gap-2 text-xs">
-        <span className="font-medium text-fg">{user ? "You" : "Keith"}</span>
+        <span className="font-medium text-fg">{author}</span>
         {answers ? <span className="text-subtle">answered a question</span> : null}
         {msg.pending ? (
           <span className="text-subtle">{msg.questionId ? "Sending answer…" : "Queued for the agent's next turn"}</span>

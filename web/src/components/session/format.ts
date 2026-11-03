@@ -1,6 +1,7 @@
 // Pure helpers that turn event data into short labels for the session view.
 
-import type { ToolStep } from "@/lib/session/reducer";
+import type { SessionAuthor } from "@/lib/api/types";
+import type { ChatMessage, ToolStep } from "@/lib/session/reducer";
 
 /** The first non-empty line of a text, trimmed. */
 export function firstLine(text: string): string {
@@ -9,6 +10,31 @@ export function firstLine(text: string): string {
     if (t) return t;
   }
   return "";
+}
+
+/** Who is looking at a session, to say who wrote its messages. */
+export interface ChatViewer {
+  /** The signed-in user's id, from /api/me; null until it loads. */
+  meId: string | null;
+  /** Who started the session, from its REST detail. */
+  creator: SessionAuthor | null;
+}
+
+/**
+ * The name shown above a chat message. A message.user is a person's when
+ * it has a user_id; without one it is the worker's own note to the agent
+ * (message_id m_keith…, docs/api.md), or came from a trigger. The session's
+ * first event is its prompt, even when the worker emits it.
+ */
+export function messageAuthor(msg: ChatMessage, viewer: ChatViewer): string {
+  if (msg.role === "assistant") return "Keith";
+  if (msg.pending) return "You"; // sent from this page, not yet echoed back
+  if (msg.userId) {
+    if (msg.userId === viewer.meId) return "You";
+    if (msg.userId === viewer.creator?.id) return viewer.creator.login;
+    return "A teammate";
+  }
+  return msg.id.startsWith("m_keith") && msg.seq !== 1 ? "Keith" : "Trigger";
 }
 
 /**

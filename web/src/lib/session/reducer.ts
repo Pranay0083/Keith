@@ -29,6 +29,8 @@ export interface ChatMessage {
   /** message_id. */
   id: string;
   role: "user" | "assistant";
+  /** The author's users.id, from message.user; null when no person wrote it. */
+  userId: string | null;
   text: string;
   /** Only deltas have arrived; the final message.assistant has not. */
   streaming: boolean;
@@ -270,6 +272,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
         kind: "message",
         id: p.message_id,
         role: "user",
+        userId: p.user_id || null,
         text: p.text,
         streaming: false,
         pending: false,
@@ -294,6 +297,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
         kind: "message",
         id: p.message_id,
         role: "assistant",
+        userId: null,
         text: p.text,
         streaming: false,
         pending: false,
@@ -313,6 +317,7 @@ function fold(state: SessionState, e: SessionEvent): SessionState {
           kind: "message",
           id: p.message_id,
           role: "assistant",
+          userId: null,
           text: p.text,
           streaming: true,
           pending: false,
@@ -591,6 +596,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         kind: "message",
         id: action.messageId,
         role: "user",
+        userId: null, // the viewer's own, until its message.user says so
         text: action.text,
         streaming: false,
         pending: true,

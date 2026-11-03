@@ -236,11 +236,11 @@ describe("streaming assistant messages", () => {
 describe("user messages", () => {
   it("shows a sent message as pending until its message.user arrives", () => {
     let s = sessionReducer(fresh(), { type: "message_sent", messageId: "m2", text: "Use dayjs", ts: "t" });
-    expect(messages(s)[0]).toMatchObject({ id: "m2", pending: true, seq: 0 });
+    expect(messages(s)[0]).toMatchObject({ id: "m2", pending: true, seq: 0, userId: null });
 
     s = applyEvent(s, ev(1, "message.user", { message_id: "m2", text: "Use dayjs", user_id: "u1" }));
     expect(messages(s)).toHaveLength(1);
-    expect(messages(s)[0]).toMatchObject({ id: "m2", pending: false, seq: 1 });
+    expect(messages(s)[0]).toMatchObject({ id: "m2", pending: false, seq: 1, userId: "u1" });
   });
 
   it("does not duplicate a message whose event arrived before the API response", () => {

@@ -29,6 +29,11 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 
+/** The signed-in user, or null outside AppShell. */
+export function useMe(): Me | null {
+  return useContext(AppContext)?.me ?? null;
+}
+
 function readStoredOrg(): string | null {
   try {
     return window.localStorage.getItem(ORG_KEY);
