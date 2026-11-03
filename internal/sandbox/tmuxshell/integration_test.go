@@ -104,6 +104,15 @@ func TestTmuxShellsInDocker(t *testing.T) {
 			!strings.HasPrefix(big.OutputTail, "[... ") {
 			t.Fatalf("big output: exit %d, %d bytes, starts %q", big.ExitCode, len(big.OutputTail), big.OutputTail[:min(60, len(big.OutputTail))])
 		}
+		// Over the 4 MiB backlog limit: the middle is skipped, the end and
+		// the exit code survive.
+		huge := exec(t, "work", "seq 1 1500000; echo end", 0)
+		if huge.ExitCode != 0 || !strings.HasSuffix(huge.OutputTail, "1500000\nend\n") || len(huge.OutputTail) > tmuxshell.DefaultTailBytes+100 {
+			t.Fatalf("huge output: exit %d, %d bytes, ends %q", huge.ExitCode, len(huge.OutputTail), huge.OutputTail[max(0, len(huge.OutputTail)-40):])
+		}
+		if !strings.Contains(live.get("work"), "bytes of output skipped") {
+			t.Fatal("huge output did not take the backlog-skip path")
+		}
 		long := strings.Repeat("x", 100<<10) // over the inline limit
 		if r := exec(t, "work", "echo "+long+" | wc -c", 0); strings.TrimSpace(r.OutputTail) != "102401" {
 			t.Fatalf("long command = %q", r.OutputTail)

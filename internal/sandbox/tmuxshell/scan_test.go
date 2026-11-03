@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Pranay0083/keith/internal/sandbox"
 )
 
 // render feeds chunks and renders the segments as text with markers
@@ -123,5 +125,33 @@ func TestTail(t *testing.T) {
 	got = tail(strings.Repeat("é", 100), 51, 0)
 	if !strings.HasSuffix(got, strings.Repeat("é", 25)) || strings.ContainsRune(got, '\uFFFD') {
 		t.Fatalf("utf-8 tail = %q", got)
+	}
+}
+
+func TestParsePoll(t *testing.T) {
+	ok := func(stdout string) pollResult {
+		t.Helper()
+		pr, err := parsePoll(&sandbox.ExecResult{Stdout: stdout}, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pr
+	}
+	if pr := ok("0 |7|-\naGVs\nbG8=\n"); pr.state != paneAlive || pr.from != 7 || string(pr.data) != "hello" || pr.skippedDone != "" {
+		t.Fatalf("alive = %+v", pr)
+	}
+	if pr := ok("1 3|9|__KEITH_D_ab_0__\n"); pr.state != paneDead || pr.status != 3 || pr.from != 9 || pr.skippedDone != "__KEITH_D_ab_0__" {
+		t.Fatalf("dead = %+v", pr)
+	}
+	if pr := ok("gone|0|-\n"); pr.state != paneGone {
+		t.Fatalf("gone = %+v", pr)
+	}
+	for _, bad := range []string{"", "junk", "0 |x|-\n", "0 |7|-\n!!!"} {
+		if _, err := parsePoll(&sandbox.ExecResult{Stdout: bad}, 7); err == nil {
+			t.Errorf("parsePoll(%q) succeeded", bad)
+		}
+	}
+	if _, err := parsePoll(&sandbox.ExecResult{ExitCode: 1, Stderr: "bash: not found"}, 0); err == nil {
+		t.Error("non-zero exit accepted")
 	}
 }
