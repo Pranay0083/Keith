@@ -1,0 +1,37 @@
+{
+  "name": "keith-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Keith web app: connect GitHub, start coding tasks and watch the agent work live.",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "dev:mock": "NEXT_PUBLIC_API_MOCK=1 next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint --max-warnings=0 . && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "next": "16.4.2",
+    "react": "19.3.1",
+    "react-diff-view": "3.3.3",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

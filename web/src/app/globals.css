@@ -1,0 +1,250 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Light by default, dark through prefers-color-scheme. Every
+ * colour in the app comes from these, through the Tailwind theme below
+ * (bg-canvas, text-muted, border-line, ...), so components never need a
+ * dark: variant.
+ */
+:root {
+  color-scheme: light;
+  --canvas: #ffffff;
+  --panel: #f8f8f9;
+  --raised: #ffffff;
+  --hover: #f1f1f3;
+  --line: #e5e5e8;
+  --line-strong: #d1d1d6;
+  --fg: #18181b;
+  --muted: #52525b;
+  --subtle: #71717a;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-fg: #ffffff;
+  --accent-text: #1d4ed8;
+  --accent-soft: #eff4ff;
+  --ok: #15803d;
+  --ok-soft: #ecfdf3;
+  --warn: #a15c07;
+  --warn-soft: #fff8eb;
+  --bad: #b91c1c;
+  --bad-soft: #fef2f2;
+  --wait: #6d28d9;
+  --wait-soft: #f5f3ff;
+  --focus: #2563eb;
+  --term-bg: #fbfbfc;
+  --term-fg: #27272a;
+  --diff-add: #e9f7ee;
+  --diff-add-strong: #c8eed4;
+  --diff-del: #fdeeee;
+  --diff-del-strong: #f8d0d0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --canvas: #0f0f11;
+    --panel: #151518;
+    --raised: #1b1b1f;
+    --hover: #222227;
+    --line: #2a2a30;
+    --line-strong: #3a3a42;
+    --fg: #ececef;
+    --muted: #a6a6b0;
+    --subtle: #8a8a94;
+    --accent: #2f6fed;
+    --accent-hover: #4a83f0;
+    --accent-fg: #ffffff;
+    --accent-text: #7aa7ff;
+    --accent-soft: #172036;
+    --ok: #4ade80;
+    --ok-soft: #102a1b;
+    --warn: #fbbf24;
+    --warn-soft: #2b2110;
+    --bad: #f87171;
+    --bad-soft: #2d1414;
+    --wait: #b197fc;
+    --wait-soft: #221a38;
+    --focus: #7aa7ff;
+    --term-bg: #121215;
+    --term-fg: #e4e4e7;
+    --diff-add: #12261a;
+    --diff-add-strong: #1d4029;
+    --diff-del: #2a1414;
+    --diff-del-strong: #4a1d1d;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-wait: var(--wait);
+  --color-wait-soft: var(--wait-soft);
+  --color-term: var(--term-bg);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* One visible focus style everywhere, keyboard only. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* The streaming caret on a message that is still typing. */
+@keyframes caret-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.streaming-caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
+  background: currentColor;
+  opacity: 0.6;
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* xterm.js: let the container own the background and padding. */
+.xterm {
+  height: 100%;
+  padding: 6px 8px;
+}
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* react-diff-view, restyled with our tokens. */
+.diff {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.diff-gutter-col {
+  width: 3.25em;
+}
+.diff-gutter {
+  padding: 0 0.5em;
+  text-align: right;
+  color: var(--subtle);
+  user-select: none;
+  cursor: default;
+}
+.diff-gutter:empty::before,
+.diff-gutter[data-line-number]::before {
+  content: attr(data-line-number);
+}
+.diff-code {
+  padding: 0 0.75em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+.diff-code-insert,
+.diff-gutter-insert {
+  background: var(--diff-add);
+}
+.diff-code-delete,
+.diff-gutter-delete {
+  background: var(--diff-del);
+}
+.diff-code-edit {
+  background: transparent;
+}
+.diff-code-insert .diff-code-edit {
+  background: var(--diff-add-strong);
+}
+.diff-code-delete .diff-code-edit {
+  background: var(--diff-del-strong);
+}
+.diff-hunk-header {
+  background: var(--panel);
+  color: var(--subtle);
+}
+.diff-hunk-header-content {
+  padding: 2px 0.75em;
+  font-family: var(--font-mono);
+}
+.diff-decoration-content {
+  padding: 2px 0.75em;
+  font-family: var(--font-mono);
+  color: var(--subtle);
+}
+.diff-omit {
+  background: transparent;
+}
