@@ -413,6 +413,22 @@ func (s *session) shipRepo(ctx context.Context, r *repoState, ch repoChanges, ha
 		return failf(ReasonShipFailed, "Refusing to push %s: %v", r.FullName, err)
 	}
 	title := s.prTitle()
+	if ch.dirty || ch.unpushed > 0 || !hasPR {
+		// Commit and push only on the session branch: the agent may have
+		// checked out another branch, or left HEAD detached.
+		out, err := s.execOK(ctx, r.Path, "git rev-parse --abbrev-ref HEAD", gitCmdTimeout)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return failf(ReasonShipFailed, "Could not read the current branch of %s: %s", r.FullName, err.Error())
+		}
+		if head := strings.TrimSpace(out); head != r.Branch {
+			return failf(ReasonShipFailed,
+				"%s is on %q, not the session branch %s, so the worker did not commit or push it. Send a message asking the agent to check out %s (keeping its work) and finish.",
+				r.FullName, head, r.Branch, r.Branch)
+		}
+	}
 	if ch.dirty {
 		a := agent.DefaultGitAuthor
 		cmd := fmt.Sprintf("git add -A && git -c user.name=%s -c user.email=%s commit -q -m %s",

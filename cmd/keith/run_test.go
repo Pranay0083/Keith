@@ -269,7 +269,8 @@ func (p *snapProvider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.S
 }
 
 // localHandler fakes the sandbox's git and setup commands.
-func localHandler(sandbox.Spec) memsandbox.Handler {
+func localHandler(spec sandbox.Spec) memsandbox.Handler {
+	branch := "agent/" + spec.Labels["keith.session"]
 	return func(req sandbox.ExecRequest) (*sandbox.ExecResult, error) {
 		ok := func(s string) (*sandbox.ExecResult, error) { return &sandbox.ExecResult{Stdout: s}, nil }
 		c := req.Cmd
@@ -284,6 +285,8 @@ func localHandler(sandbox.Spec) memsandbox.Handler {
 			return ok("1\n0\n0\n") // dirty, nothing committed
 		case strings.Contains(c, "git symbolic-ref"):
 			return ok("origin/main\n")
+		case c == "git rev-parse --abbrev-ref HEAD":
+			return ok(branch + "\n")
 		}
 		return ok("")
 	}
