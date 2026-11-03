@@ -11,6 +11,7 @@ import (
 	"github.com/Pranay0083/keith/internal/llm/llmtest"
 	"github.com/Pranay0083/keith/internal/sandbox"
 	"github.com/Pranay0083/keith/internal/sandbox/memsandbox"
+	"github.com/Pranay0083/keith/internal/sandbox/tmuxshell"
 	"github.com/Pranay0083/keith/internal/store"
 )
 
@@ -159,4 +160,57 @@ func TestReprovisionNeverReplacesTheSnapshot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A token refresh landing between the snapshot's removal of the token
+// file and the snapshot itself must not write the token into the image:
+// the rewrite waits until the snapshot is taken.
+func TestTokenRefreshDuringSnapshotIsNotBakedIn(t *testing.T) {
+	e := newEnv(t)
+	e.profile(store.RepoProfile{RepoID: testRepo, InstallCmd: "npm ci"})
+	s := e.newSession()
+	const rotated = "ghs_rotated_during_snapshot"
+	e.sbRules = append(e.sbRules, memsandbox.On(memsandbox.Contains(tmuxshell.DefaultStateDir), func(req sandbox.ExecRequest) (*sandbox.ExecResult, error) {
+		sb, _ := e.sbx.Sandbox(e.st.Session(s.ID).SandboxID)
+		e.gh.lastSandbox().rotate(rotated)
+		// Give the token writer time to write, as a refresh racing the
+		// snapshot would.
+		deadline := time.Now().Add(300 * time.Millisecond)
+		for time.Now().Before(deadline) && len(writesOf(sb, rotated)) == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		return &sandbox.ExecResult{}, nil
+	}))
+	e.llm.Push(llmtest.Text("done"))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	sb := e.sandbox(s.ID)
+	snapAt, writeAt := -1, -1
+	for i, c := range sb.Calls() {
+		switch {
+		case c.Op == memsandbox.OpSnapshot:
+			snapAt = i
+		case c.Op == memsandbox.OpWrite && c.Path == gitTokenPath+".tmp" && string(c.Data) == rotated+"\n" && writeAt < 0:
+			writeAt = i
+		}
+	}
+	if snapAt < 0 || writeAt < 0 {
+		t.Fatalf("snapshot at %d, rotated token written at %d", snapAt, writeAt)
+	}
+	if writeAt < snapAt {
+		t.Error("the refreshed token was written before the snapshot was taken")
+	}
+}
+
+// writesOf returns the calls that wrote value (plus a newline) to the
+// token file's temporary path.
+func writesOf(sb *memsandbox.Sandbox, value string) []memsandbox.Call {
+	var out []memsandbox.Call
+	for _, c := range sb.Calls() {
+		if c.Op == memsandbox.OpWrite && c.Path == gitTokenPath+".tmp" && string(c.Data) == value+"\n" {
+			out = append(out, c)
+		}
+	}
+	return out
 }

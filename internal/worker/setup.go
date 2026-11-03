@@ -135,23 +135,27 @@ func exitPhrase(res sandbox.ShellResult) string {
 // snapshot saves the freshly set-up sandbox as the repo's template. The
 // token file and the shell state are removed first so neither lands in
 // the image (the docker provider also blanks Spec.Env, the secrets), and
-// the token is written back afterwards.
+// the token is written back afterwards. Token refreshes wait meanwhile.
 func (s *session) snapshot(ctx context.Context, r *repoState, hash string) {
 	_ = s.shells.Close(ctx, setupShell)
+	if tf := s.tokenFile; tf != nil {
+		tf.write.Lock()
+		defer func() {
+			v := tf.current()
+			if err := s.writeToken(ctx, v); err != nil {
+				s.log.Warn("snapshot: restore the token file", "err", err)
+			} else {
+				tf.setWritten(v)
+			}
+			tf.write.Unlock()
+		}()
+	}
 	cleanup := "rm -f " + gitTokenPath + " " + gitTokenPath + ".tmp; rm -rf " + tmuxshell.DefaultStateDir
 	if _, err := s.exec(ctx, "/", cleanup, time.Minute); err != nil {
 		s.log.Warn("snapshot: clean up", "err", err)
 		return
 	}
 	id, err := s.sb.Snapshot(ctx, "keith-"+r.Name)
-	if tf := s.tokenFile; tf != nil {
-		tf.mu.Lock()
-		v := tf.written
-		tf.mu.Unlock()
-		if werr := s.writeToken(ctx, v); werr != nil {
-			s.log.Warn("snapshot: restore the token file", "err", werr)
-		}
-	}
 	if err != nil {
 		if !errors.Is(err, sandbox.ErrNotSupported) {
 			s.log.Warn("snapshot the sandbox", "repo", r.FullName, "err", err)

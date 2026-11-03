@@ -374,10 +374,31 @@ git config --global --add %[1]s '' && git config --global --add %[1]s %[2]s`, sh
 // tokenFile serializes writes of the sandbox token file; the latest
 // offered token wins.
 type tokenFile struct {
+	// write is held while the file is written, and by snapshot from the
+	// file's removal until it is restored, so a token refresh can never
+	// write the file into a snapshot.
+	write sync.Mutex
+
 	mu      sync.Mutex
 	latest  string
 	written string
 	signal  chan struct{}
+}
+
+// current returns the token the file should hold.
+func (t *tokenFile) current() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.latest != "" {
+		return t.latest
+	}
+	return t.written
+}
+
+func (t *tokenFile) setWritten(v string) {
+	t.mu.Lock()
+	t.written = v
+	t.mu.Unlock()
 }
 
 func (t *tokenFile) offer(v string) {
@@ -430,21 +451,25 @@ func (s *session) startTokens(ctx context.Context) error {
 				return
 			case <-tf.signal:
 			}
+			tf.write.Lock()
 			tf.mu.Lock()
 			v, done := tf.latest, tf.written
 			tf.mu.Unlock()
 			if v == "" || v == done {
+				tf.write.Unlock()
 				continue
 			}
-			if err := s.writeToken(tctx, v); err != nil {
+			err := s.writeToken(tctx, v)
+			if err == nil {
+				tf.setWritten(v)
+			}
+			tf.write.Unlock()
+			if err != nil {
 				if tctx.Err() == nil {
 					s.log.Warn("rotate the sandbox token", "err", err)
 				}
 				continue
 			}
-			tf.mu.Lock()
-			tf.written = v
-			tf.mu.Unlock()
 			s.log.Info("rotated the sandbox token")
 		}
 	}()
