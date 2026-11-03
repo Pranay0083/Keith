@@ -229,7 +229,7 @@ func (s *session) agentLoop(ctx context.Context) error {
 			if s.w.o.MaxVerifyCycles > 0 && cycles < s.w.o.MaxVerifyCycles {
 				fb, err := s.verify(ctx)
 				if err != nil {
-					return s.interruptedOr(ctx, err)
+					return s.endOfTurnFailed(ctx, err)
 				}
 				if s.stop.Load() {
 					return s.stopped(ctx)
@@ -263,6 +263,22 @@ func (s *session) agentLoop(ctx context.Context) error {
 			return s.fail(ctx, out.Reason, msg)
 		}
 	}
+}
+
+// endOfTurnFailed fails the session for an error at the end of a turn
+// (verify or ship). Retrying the task would meet the same git state, and
+// once its retries ran out the session would stay running with nothing
+// to run it. An interruption is still retried.
+func (s *session) endOfTurnFailed(ctx context.Context, err error) error {
+	if ierr := s.interruptedOr(ctx, err); errors.Is(ierr, errInterrupted) {
+		return ierr
+	}
+	var fe *failure
+	if errors.As(err, &fe) {
+		return s.fail(ctx, fe.reason, fe.msg)
+	}
+	return s.fail(ctx, ReasonShipFailed,
+		"The worker could not finish the turn: "+s.em.redact(err.Error())+". Send a message to try again.")
 }
 
 // stopped records why the run stopped: the time limit, or a Stop.
@@ -378,7 +394,7 @@ func (s *session) ship(ctx context.Context, finalText string) error {
 	for _, r := range s.repos {
 		ch, err := s.changes(ctx, r)
 		if err != nil {
-			return s.interruptedOr(ctx, err)
+			return s.endOfTurnFailed(ctx, err)
 		}
 		_, hasPR := s.state.Aux.PRs[r.FullName]
 		hasPR = hasPR || r.PRNumber > 0
@@ -390,16 +406,12 @@ func (s *session) ship(ctx context.Context, finalText string) error {
 			// Nothing is pushed; save the final diff, which also covers
 			// changes made with shell commands.
 			if err := s.saveDiff(ctx, r); err != nil {
-				return s.interruptedOr(ctx, err)
+				return s.endOfTurnFailed(ctx, err)
 			}
 			continue
 		}
 		if err := s.shipRepo(ctx, r, ch, hasPR, finalText); err != nil {
-			var fe *failure
-			if errors.As(err, &fe) {
-				return s.fail(ctx, fe.reason, fe.msg)
-			}
-			return s.interruptedOr(ctx, err)
+			return s.endOfTurnFailed(ctx, err)
 		}
 	}
 	if !anything {
