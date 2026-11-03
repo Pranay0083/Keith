@@ -135,6 +135,22 @@ async function click(el: HTMLElement) {
 }
 
 describe("StopControl", () => {
+  it("focuses 'Stop run' when the confirm opens, and leaves focus alone after that", async () => {
+    await click(buttons("Stop")[0]!);
+    expect(document.activeElement).toBe(buttons("Stop run")[0]);
+
+    // The user goes back to the composer while the agent keeps streaming.
+    const textarea = document.querySelector("textarea")!;
+    await act(async () => textarea.focus());
+    await send(
+      frame(0, "message.delta", { message_id: "msg_1", text: "Looking at " }),
+      frame(0, "message.delta", { message_id: "msg_1", text: "the tests" }),
+    );
+    await send(frame(3, "tool_call.started", { call_id: "toolu_1", tool: "read_file", input: { path: "a.ts" } }));
+    expect(buttons("Stop run")).toHaveLength(1);
+    expect(document.activeElement).toBe(textarea);
+  });
+
   it("can stop a run that a follow-up resumed after an earlier stop", async () => {
     await click(buttons("Stop")[0]!);
     await click(buttons("Stop run")[0]!);

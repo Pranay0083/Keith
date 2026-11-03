@@ -5,7 +5,7 @@
 // only adds what events don't carry (prompt, repos, model).
 
 import Link from "next/link";
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { api, isApiError, loginUrl } from "@/lib/api/client";
 import { isTerminal } from "@/lib/api/events";
 import type { Session } from "@/lib/api/types";
@@ -333,6 +333,13 @@ function ConnectionDot({ connection }: { connection: ConnectionState }) {
 function StopControl({ active, stopping, onStop }: { active: boolean; stopping: boolean; onStop(): Promise<void> }) {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
+  const stopRun = useRef<HTMLButtonElement>(null);
+  // Focus "Stop run" when the confirm opens, once: the header re-renders on
+  // every event batch, and refocusing then would pull the user out of
+  // whatever they moved on to (the composer, say).
+  useEffect(() => {
+    if (confirm) stopRun.current?.focus();
+  }, [confirm]);
   if (!active) return null;
   if (stopping) {
     return (
@@ -359,7 +366,7 @@ function StopControl({ active, stopping, onStop }: { active: boolean; stopping: 
         size="sm"
         variant="danger"
         loading={busy}
-        ref={(el) => el?.focus()}
+        ref={stopRun}
         onClick={async () => {
           setBusy(true);
           await onStop();
