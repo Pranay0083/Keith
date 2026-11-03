@@ -11,8 +11,12 @@ export type { Api, SocketLike } from "./api";
 /** True when the app runs against the in-browser mock API. */
 export const isMock = process.env.NEXT_PUBLIC_API_MOCK === "1";
 
-/** Resolves the API implementation for this build. */
+/**
+ * Resolves the API implementation for this build. NEXT_PUBLIC_API_MOCK is
+ * inlined at build time, so a real build never ships the mock.
+ */
 export async function getApi(): Promise<Api> {
+  if (isMock) return (await import("./mock")).mockApi;
   return httpApi;
 }
 
