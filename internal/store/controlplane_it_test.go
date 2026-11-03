@@ -95,6 +95,11 @@ func TestSessionInputs(t *testing.T) {
 	if len(pending) != 1 || pending[0].ID != a1.ID {
 		t.Fatalf("pending after consume %+v", pending)
 	}
+	// Consumed inputs cannot be deleted; pending ones can.
+	isErr(t, s.DeleteInput(ctx, sid, m1.ID), store.ErrNotFound)
+	tmp := must(s.CreateInput(ctx, store.CreateInputParams{SessionID: sid, Kind: store.InputMessage, Text: "oops"}))
+	ok(t, s.DeleteInput(ctx, sid, tmp.ID))
+	isErr(t, s.DeleteInput(ctx, sid, tmp.ID), store.ErrNotFound)
 	if got := must(s.GetInput(ctx, sid, m1.ID)); got.ConsumedAt == nil {
 		t.Fatal("consumed input has no consumed_at")
 	}
@@ -124,6 +129,18 @@ func TestOpenQuestionAndLocks(t *testing.T) {
 	if got := must(s.GetSession(ctx, sid)); got.OpenQuestionID != "" {
 		t.Fatalf("cleared open question %q", got.OpenQuestionID)
 	}
+	// ReopenQuestion only acts on a waiting session with no open question.
+	if must(s.ReopenQuestion(ctx, sid, "toolu_9")) {
+		t.Fatal("reopened on a queued session")
+	}
+	ok(t, s.SetSessionStatus(ctx, sid, events.StatusWaitingForUser, ""))
+	if !must(s.ReopenQuestion(ctx, sid, "toolu_9")) || must(s.GetSession(ctx, sid)).OpenQuestionID != "toolu_9" {
+		t.Fatal("not reopened")
+	}
+	if must(s.ReopenQuestion(ctx, sid, "toolu_10")) {
+		t.Fatal("reopened over an open question")
+	}
+	ok(t, s.ClearOpenQuestion(ctx, sid))
 	isErr(t, s.SetOpenQuestion(ctx, missingID, "q"), store.ErrNotFound)
 	isErr(t, s.ClearOpenQuestion(ctx, missingID), store.ErrNotFound)
 	if err := s.SetOpenQuestion(ctx, sid, ""); err == nil {

@@ -222,3 +222,32 @@ func (s *Store) ClearOpenQuestion(ctx context.Context, sessionID string) error {
 		UPDATE sessions SET open_question_id = NULL, updated_at = now() WHERE id = $1`, sessionID)
 	return affected(op, tag.RowsAffected(), err)
 }
+
+// DeleteInput deletes a pending input. The API uses it to undo an input
+// whose resume_session could not be enqueued, so the user can retry.
+func (s *Store) DeleteInput(ctx context.Context, sessionID, id string) error {
+	const op = "delete input"
+	if !validID(sessionID) || !ValidInputID(id) {
+		return errNotFound(op)
+	}
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM session_inputs WHERE session_id = $1 AND id = $2 AND consumed_at IS NULL`, sessionID, id)
+	return affected(op, tag.RowsAffected(), err)
+}
+
+// ReopenQuestion sets the open question back to questionID if none is
+// open and the session is still waiting_for_user, undoing the API's
+// ClearOpenQuestion for an answer it had to delete. It reports whether
+// it changed anything.
+func (s *Store) ReopenQuestion(ctx context.Context, sessionID, questionID string) (bool, error) {
+	if !validID(sessionID) || questionID == "" {
+		return false, errNotFound("reopen question")
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE sessions SET open_question_id = $2, updated_at = now()
+		WHERE id = $1 AND open_question_id IS NULL AND status = 'waiting_for_user'`, sessionID, questionID)
+	if err != nil {
+		return false, wrap("reopen question", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

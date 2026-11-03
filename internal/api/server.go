@@ -209,6 +209,13 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/orgs/{org_id}/secrets", s.handleListSecrets)
 	api("PUT /api/orgs/{org_id}/secrets/{name}", s.handlePutSecret)
 	api("DELETE /api/orgs/{org_id}/secrets/{name}", s.handleDeleteSecret)
+	api("POST /api/orgs/{org_id}/sessions", s.handleCreateSession)
+	api("GET /api/orgs/{org_id}/sessions", s.handleListSessions)
+	api("GET /api/sessions/{id}", s.handleGetSession)
+	api("POST /api/sessions/{id}/messages", s.handlePostMessage)
+	api("POST /api/sessions/{id}/answers", s.handlePostAnswer)
+	api("POST /api/sessions/{id}/stop", s.handleStop)
+	api("GET /api/sessions/{id}/diff", s.handleDiff)
 	mux.Handle("OPTIONS /api/", s.cors(http.HandlerFunc(preflight)))
 	api("/api/", func(http.ResponseWriter, *http.Request) error { return errNotFound })
 
