@@ -53,13 +53,14 @@ const (
 // Call is one recorded method call. Only the fields relevant to Op are
 // set.
 type Call struct {
-	Op   Op
-	Exec sandbox.ExecRequest // OpExec
-	Path string              // OpRead, OpWrite, OpRemove (resolved, absolute)
-	Data []byte              // OpWrite
-	Mode fs.FileMode         // OpWrite
-	Port int                 // OpPortURL
-	Name string              // OpSnapshot
+	Op    Op
+	Exec  sandbox.ExecRequest // OpExec
+	Path  string              // OpRead, OpWrite, OpRemove (resolved, absolute)
+	Limit int64               // OpRead: the byte limit asked for
+	Data  []byte              // OpWrite
+	Mode  fs.FileMode         // OpWrite
+	Port  int                 // OpPortURL
+	Name  string              // OpSnapshot
 }
 
 type file struct {
@@ -180,16 +181,29 @@ func (s *Sandbox) Exec(ctx context.Context, req sandbox.ExecRequest, onOutput fu
 
 // ReadFile implements sandbox.Sandbox.
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	return s.ReadFileLimit(ctx, path, sandbox.MaxReadFile)
+}
+
+// ReadFileLimit implements sandbox.Sandbox. Every file is regular; one
+// over limit fails with sandbox.ErrFileTooLarge. Call.Limit records the
+// limit.
+func (s *Sandbox) ReadFileLimit(ctx context.Context, path string, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = sandbox.MaxReadFile
+	}
 	p := sbutil.ResolvePath(path)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.record(Call{Op: OpRead, Path: p})
+	s.record(Call{Op: OpRead, Path: p, Limit: limit})
 	if err := s.usable(); err != nil {
 		return nil, err
 	}
 	f, ok := s.files[p]
 	if !ok {
 		return nil, sbutil.NotExist("read", p)
+	}
+	if int64(len(f.data)) > limit {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: sandbox.ErrFileTooLarge}
 	}
 	return slices.Clone(f.data), nil
 }

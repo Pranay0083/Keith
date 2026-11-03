@@ -2,9 +2,13 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Pranay0083/keith/internal/sandbox"
 	"github.com/Pranay0083/keith/internal/sandbox/internal/sbutil"
@@ -74,5 +78,48 @@ func TestStreamWriterTail(t *testing.T) {
 	w.Write([]byte("def"))
 	if tail.String() != "cdef" || string(<-ch) != "abc" || string(<-ch) != "def" {
 		t.Fatal("streamWriter")
+	}
+}
+
+func TestLimitBuffer(t *testing.T) {
+	b := &limitBuffer{max: 5}
+	if n, err := b.Write([]byte("abc")); n != 3 || err != nil {
+		t.Fatalf("write = %d, %v", n, err)
+	}
+	if n, err := b.Write([]byte("defg")); n != 2 || !errors.Is(err, errOutputLimit) || !b.over || string(b.buf) != "abcde" {
+		t.Fatalf("write past max = %d, %v, over=%v, buf=%q", n, err, b.over, b.buf)
+	}
+}
+
+// Regression: ReadFile buffered whatever the sandbox printed, so a read
+// of a symlink to /dev/zero (or a planted head) could exhaust the
+// worker's memory. The docker CLI's output is now cut off at limit+1.
+func TestReadFileLimitCapsCLIOutput(t *testing.T) {
+	p, calls := fakeCLI(t, "zeros")
+	sb := &Sandbox{p: p, id: "keith-sb-fake"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := sb.ReadFileLimit(context.Background(), "zero", 1<<20)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, sandbox.ErrFileTooLarge) {
+			t.Fatalf("ReadFileLimit = %v; want ErrFileTooLarge", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ReadFileLimit of an endless stream did not return")
+	}
+	if _, err := sb.ReadFile(context.Background(), "zero"); !errors.Is(err, sandbox.ErrFileTooLarge) {
+		t.Fatalf("ReadFile = %v; want ErrFileTooLarge", err)
+	}
+	var limits []string
+	for _, c := range calls() {
+		if len(c.Args) > 0 && c.Args[0] == "exec" {
+			limits = append(limits, c.Args[len(c.Args)-1])
+		}
+	}
+	if want := []string{"1048576", strconv.Itoa(sandbox.MaxReadFile)}; !slices.Equal(limits, want) {
+		t.Fatalf("limits passed to the read script = %v; want %v", limits, want)
 	}
 }

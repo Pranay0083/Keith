@@ -577,3 +577,62 @@ func TestSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// Regression: ReadFile io.ReadAll'd the download, so a symlink to
+// /dev/zero (or any huge file) could exhaust the worker's memory. A check
+// command now refuses special and oversized files before the download,
+// and the download stops after limit+1 bytes.
+func TestReadFileLimits(t *testing.T) {
+	f := newFake(t)
+	f.addSandbox("sb-1", "started")
+	sb, err := f.provider(Options{}).Get(ctxT(t), "sb-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := ctxT(t)
+	f.read(func() {
+		f.files["/workspace/ten"] = fakeFile{data: []byte("0123456789")}
+		f.files["/workspace/zero"] = fakeFile{kind: "special"}
+		f.files["/workspace/swapped"] = fakeFile{kind: "endless"}
+	})
+	downloads := func() int { return f.countRequests("POST /toolbox/sb-1/files/bulk-download") }
+
+	if got, err := sb.ReadFileLimit(ctx, "ten", 10); err != nil || string(got) != "0123456789" {
+		t.Fatalf("ReadFileLimit(ten, 10) = %q, %v", got, err)
+	}
+	before := downloads()
+	if _, err := sb.ReadFileLimit(ctx, "ten", 9); !errors.Is(err, sandbox.ErrFileTooLarge) {
+		t.Fatalf("ReadFileLimit(ten, 9) = %v; want ErrFileTooLarge", err)
+	}
+	if _, err := sb.ReadFile(ctx, "zero"); !errors.Is(err, sandbox.ErrNotRegular) {
+		t.Fatalf("ReadFile(zero) = %v; want ErrNotRegular", err)
+	}
+	if _, err := sb.ReadFile(ctx, "missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadFile(missing) = %v; want fs.ErrNotExist", err)
+	}
+	if n := downloads() - before; n != 0 {
+		t.Fatalf("%d downloads of refused files", n)
+	}
+
+	if _, err := sb.ReadFileLimit(ctx, "swapped", 1<<20); !errors.Is(err, sandbox.ErrFileTooLarge) {
+		t.Fatalf("ReadFileLimit(swapped) = %v; want ErrFileTooLarge", err)
+	}
+	// The server stops once the client hangs up; it can only have written
+	// what fit in the client's limit and the connection's buffers.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n1, n2 int64
+		f.read(func() { n1 = f.downloaded })
+		time.Sleep(100 * time.Millisecond)
+		f.read(func() { n2 = f.downloaded })
+		if n1 == n2 {
+			if n2 > 64<<20 {
+				t.Fatalf("the endless download wrote %d bytes", n2)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the endless download is still being read (%d bytes)", n2)
+		}
+	}
+}

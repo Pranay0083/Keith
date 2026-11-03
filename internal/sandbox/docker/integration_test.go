@@ -254,3 +254,40 @@ func TestDockerRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// Regression: `ln -s /dev/zero x` then read_file x made ReadFile buffer
+// /dev/zero until the worker ran out of memory. Special files are refused
+// before anything is read, and big files are refused by size.
+func TestDockerReadFileRefusesSpecialFiles(t *testing.T) {
+	p := sbtest.DockerProvider(t)
+	ctx := context.Background()
+	sb := sbtest.Sandbox(t, p, sandbox.Spec{})
+
+	res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: `ln -s /dev/zero zero && ln -s /dev/urandom random && mkfifo fifo && ` +
+		`head -c 2000000 /dev/zero > big && echo hi > small && ln -s small link && mkdir dir`}, nil)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("setup: %+v, %v", res, err)
+	}
+	for _, name := range []string{"zero", "random", "fifo", "dir"} {
+		start := time.Now()
+		got, err := sb.ReadFile(ctx, name)
+		if !errors.Is(err, sandbox.ErrNotRegular) || got != nil {
+			t.Errorf("ReadFile(%s) = %d bytes, %v; want ErrNotRegular", name, len(got), err)
+		}
+		if d := time.Since(start); d > 10*time.Second {
+			t.Errorf("ReadFile(%s) took %v", name, d)
+		}
+	}
+	if got, err := sb.ReadFileLimit(ctx, "big", 1<<20); !errors.Is(err, sandbox.ErrFileTooLarge) || got != nil {
+		t.Errorf("ReadFileLimit(big, 1 MiB) = %d bytes, %v; want ErrFileTooLarge", len(got), err)
+	}
+	if got, err := sb.ReadFileLimit(ctx, "big", 2000000); err != nil || len(got) != 2000000 {
+		t.Errorf("ReadFileLimit(big, its size) = %d bytes, %v", len(got), err)
+	}
+	if got, err := sb.ReadFileLimit(ctx, "link", 3); err != nil || string(got) != "hi\n" {
+		t.Errorf("ReadFileLimit(symlink to a regular file) = %q, %v", got, err)
+	}
+	if _, err := sb.ReadFileLimit(ctx, "link", 2); !errors.Is(err, sandbox.ErrFileTooLarge) {
+		t.Errorf("ReadFileLimit(3 bytes, limit 2) = %v; want ErrFileTooLarge", err)
+	}
+}

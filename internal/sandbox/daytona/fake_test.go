@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,10 @@ type fakeCommand struct {
 type fakeFile struct {
 	data []byte
 	mode string
+	// kind is "" for a regular file, "special" for one that is not
+	// (a device or FIFO), or "endless" for one that passes the read check
+	// but downloads forever (a file swapped for /dev/zero after the check).
+	kind string
 }
 
 type fakeSnapshot struct {
@@ -67,6 +72,7 @@ type fakeDaytona struct {
 	folders     []string
 	snapshots   map[string]*fakeSnapshot
 	previewQS   []string
+	downloaded  int64 // bytes of endless downloads written
 	closed      chan struct{}
 }
 
@@ -333,8 +339,9 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.executes = append(f.executes, body.Command)
+		exit := f.readCheck(body.Command)
 		f.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"exitCode": 0, "result": ""})
+		writeJSON(w, http.StatusOK, map[string]any{"exitCode": exit, "result": ""})
 
 	case p == "/process/session" && r.Method == http.MethodPost:
 		var body struct {
@@ -456,6 +463,19 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 		f.mu.Unlock()
 		mw := multipart.NewWriter(w)
 		w.Header().Set("Content-Type", mw.FormDataContentType())
+		if ok && file.kind == "endless" {
+			part, _ := mw.CreateFormFile("file", body.Paths[0])
+			zeros := make([]byte, 32<<10)
+			for {
+				n, err := part.Write(zeros)
+				f.mu.Lock()
+				f.downloaded += int64(n)
+				f.mu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}
 		if ok {
 			part, _ := mw.CreateFormFile("file", body.Paths[0])
 			_, _ = part.Write(file.data)
@@ -479,6 +499,35 @@ func (f *fakeDaytona) serveToolbox(w http.ResponseWriter, r *http.Request, id, p
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+var (
+	readCheckPath  = regexp.MustCompile(`p='([^']*)'`)
+	readCheckLimit = regexp.MustCompile(`-gt (\d+) \]`)
+)
+
+// readCheck runs readCheckScript against the fake's files and returns its
+// exit code; other commands exit 0. Callers hold f.mu.
+func (f *fakeDaytona) readCheck(cmd string) int {
+	if !strings.Contains(cmd, "stat -L -c") {
+		return 0
+	}
+	m, l := readCheckPath.FindStringSubmatch(strings.ReplaceAll(cmd, `'\''`, "'")), readCheckLimit.FindStringSubmatch(cmd)
+	if m == nil || l == nil {
+		f.t.Errorf("unexpected read check command %q", cmd)
+		return 1
+	}
+	file, ok := f.files[m[1]]
+	limit, _ := strconv.ParseInt(l[1], 10, 64)
+	switch {
+	case !ok:
+		return readNoFile
+	case file.kind == "special":
+		return readNotRegular
+	case int64(len(file.data)) > limit:
+		return readTooLarge
+	}
+	return 0
 }
 
 // serveLogsWS streams a command's output the way the daemon does: chunks

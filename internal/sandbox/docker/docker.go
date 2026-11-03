@@ -8,7 +8,8 @@
 // the label keith.sandbox=1 and a fixed set of container ports published
 // on random 127.0.0.1 host ports (Options.Ports), which PortURL reports.
 // Exec is `docker exec`; files move through exec with stdin and stdout, so
-// they are owned by the sandbox user and large files stream. Pause and
+// they are owned by the sandbox user and large files stream (reads are
+// checked in the sandbox and capped, see ReadFileLimit). Pause and
 // Resume are `docker pause`/`unpause` (the processes freeze and keep their
 // memory), Snapshot is `docker commit`, Delete is `docker rm -f`.
 //
@@ -157,28 +158,76 @@ func wrap(err error) error {
 	return err
 }
 
+// Output limits for docker CLI calls. Some print what a sandbox process
+// wrote (file reads), so nothing is buffered without a bound.
+const (
+	// maxCLIOutput bounds stdout of calls that print daemon output
+	// (inspect, ps, port, commit).
+	maxCLIOutput = 16 << 20
+	// maxScriptOutput bounds stdout of file writes and removes, which
+	// print nothing.
+	maxScriptOutput = 64 << 10
+	// maxCLIStderr is how much of stderr is kept (the tail), for errors.
+	maxCLIStderr = 64 << 10
+)
+
+// errOutputLimit: a docker CLI call printed more than its limit.
+var errOutputLimit = errors.New("output limit exceeded")
+
 // run executes a docker CLI command and returns its stdout.
 func (p *Provider) run(ctx context.Context, stdin io.Reader, env []string, args ...string) ([]byte, error) {
+	return p.runLimit(ctx, stdin, env, maxCLIOutput, args...)
+}
+
+// runLimit is run with stdout capped at limit bytes: past that the call
+// is stopped and fails with an error wrapping errOutputLimit.
+func (p *Provider) runLimit(ctx context.Context, stdin io.Reader, env []string, limit int64, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, p.opts.Docker, args...)
 	cmd.Stdin = stdin
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &limitBuffer{max: limit}
+	stderr := sbutil.NewTailBuffer(maxCLIStderr)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
+	if stdout.over {
+		// The copy stopped at the limit and docker was cut off: whatever
+		// it reported after that is not the error.
+		return nil, fmt.Errorf("docker %s: stdout: %w (%d bytes)", args[0], errOutputLimit, limit)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return stdout.Bytes(), &cliError{args: args, code: ee.ExitCode(), stderr: strings.TrimSpace(stderr.String())}
+			return stdout.buf, &cliError{args: args, code: ee.ExitCode(), stderr: strings.TrimSpace(stderr.String())}
 		}
 		return nil, fmt.Errorf("docker %s: %w", args[0], err)
 	}
-	return stdout.Bytes(), nil
+	return stdout.buf, nil
+}
+
+// limitBuffer collects up to max bytes. A write past max fails, which
+// makes os/exec stop copying and close the pipe, so the writer gets
+// EPIPE instead of filling memory.
+type limitBuffer struct {
+	max  int64
+	buf  []byte
+	over bool
+}
+
+func (b *limitBuffer) Write(p []byte) (int, error) {
+	if room := b.max - int64(len(b.buf)); int64(len(p)) > room {
+		n := max(room, 0)
+		b.buf = append(b.buf, p[:n]...)
+		b.over = true
+		return int(n), errOutputLimit
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
 }
 
 func randomHex(n int) string {
@@ -505,11 +554,15 @@ func (w *pidWriter) Write(p []byte) (int, error) {
 
 // fileScript exit codes.
 const (
-	exitNoFile = 44
-	exitIsDir  = 45
+	exitNoFile     = 44
+	exitIsDir      = 45
+	exitNotRegular = 46
+	exitTooLarge   = 47
 )
 
-func (s *Sandbox) fileOp(ctx context.Context, op, path string, stdin io.Reader, script string, extra ...string) ([]byte, error) {
+// fileOp runs a file script in the sandbox with the resolved path as $1
+// and extra as $2..., keeping at most limit bytes of its output.
+func (s *Sandbox) fileOp(ctx context.Context, op, path string, stdin io.Reader, limit int64, script string, extra ...string) ([]byte, error) {
 	p := sbutil.ResolvePath(path)
 	args := []string{"exec"}
 	if stdin != nil {
@@ -517,14 +570,21 @@ func (s *Sandbox) fileOp(ctx context.Context, op, path string, stdin io.Reader, 
 	}
 	args = append(args, s.id, "sh", "-c", script, "sh", p)
 	args = append(args, extra...)
-	out, err := s.p.run(ctx, stdin, nil, args...)
+	out, err := s.p.runLimit(ctx, stdin, nil, limit, args...)
 	var ce *cliError
 	if errors.As(err, &ce) {
 		switch ce.code {
 		case exitNoFile:
 			return nil, sbutil.NotExist(op, p)
 		case exitIsDir:
+			if op == "read" {
+				return nil, &fs.PathError{Op: op, Path: p, Err: fmt.Errorf("is a directory: %w", sandbox.ErrNotRegular)}
+			}
 			return nil, &fs.PathError{Op: op, Path: p, Err: errors.New("is a directory")}
+		case exitNotRegular:
+			return nil, &fs.PathError{Op: op, Path: p, Err: sandbox.ErrNotRegular}
+		case exitTooLarge:
+			return nil, &fs.PathError{Op: op, Path: p, Err: sandbox.ErrFileTooLarge}
 		}
 		return nil, &fs.PathError{Op: op, Path: p, Err: wrap(err)}
 	}
@@ -534,9 +594,34 @@ func (s *Sandbox) fileOp(ctx context.Context, op, path string, stdin io.Reader, 
 	return out, nil
 }
 
+// readScript prints regular file $1 if it holds at most $2 bytes. stat
+// refuses an oversized file before anything is read; head stops after
+// $2+1 bytes anyway, in case the file grows or is swapped after the check
+// (ReadFileLimit treats $2+1 bytes as too large).
+const readScript = `[ -e "$1" ] || exit 44
+[ -d "$1" ] && exit 45
+[ -f "$1" ] || exit 46
+s=$(stat -L -c %s -- "$1" 2>/dev/null) && [ "$s" -gt "$2" ] && exit 47
+exec head -c "$(($2 + 1))" -- "$1"`
+
 // ReadFile implements sandbox.Sandbox.
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	return s.fileOp(ctx, "read", path, nil, `[ -e "$1" ] || exit 44; [ -d "$1" ] && exit 45; exec cat -- "$1"`)
+	return s.ReadFileLimit(ctx, path, sandbox.MaxReadFile)
+}
+
+// ReadFileLimit implements sandbox.Sandbox. The sandbox checks the file
+// first, and the docker CLI's output is cut off after limit+1 bytes, so
+// neither a special file nor a subverted head can grow the buffer.
+func (s *Sandbox) ReadFileLimit(ctx context.Context, path string, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = sandbox.MaxReadFile
+	}
+	limit = min(limit, 1<<50)
+	out, err := s.fileOp(ctx, "read", path, nil, limit+1, readScript, strconv.FormatInt(limit, 10))
+	if errors.Is(err, errOutputLimit) || (err == nil && int64(len(out)) > limit) {
+		return nil, &fs.PathError{Op: "read", Path: sbutil.ResolvePath(path), Err: sandbox.ErrFileTooLarge}
+	}
+	return out, err
 }
 
 // WriteFile implements sandbox.Sandbox. Mode 0 means 0644.
@@ -544,7 +629,7 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte, mode 
 	if mode == 0 {
 		mode = 0o644
 	}
-	_, err := s.fileOp(ctx, "write", path, bytes.NewReader(data),
+	_, err := s.fileOp(ctx, "write", path, bytes.NewReader(data), maxScriptOutput,
 		`[ -d "$1" ] && exit 45; mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && chmod "$2" "$1"`,
 		strconv.FormatUint(uint64(mode.Perm()), 8))
 	return err
@@ -552,7 +637,7 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte, mode 
 
 // RemoveFile implements sandbox.Sandbox. It does not remove directories.
 func (s *Sandbox) RemoveFile(ctx context.Context, path string) error {
-	_, err := s.fileOp(ctx, "remove", path, nil,
+	_, err := s.fileOp(ctx, "remove", path, nil, maxScriptOutput,
 		`[ -e "$1" ] || [ -L "$1" ] || exit 44; [ -d "$1" ] && [ ! -L "$1" ] && exit 45; rm -f -- "$1"`)
 	return err
 }

@@ -133,3 +133,22 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("specs = %+v", specs)
 	}
 }
+
+func TestReadFileLimit(t *testing.T) {
+	ctx := context.Background()
+	sb := memsandbox.New(memsandbox.WithFiles(map[string]string{"a.txt": "12345"}))
+	if got, err := sb.ReadFileLimit(ctx, "a.txt", 5); err != nil || string(got) != "12345" {
+		t.Fatalf("at the limit = %q, %v", got, err)
+	}
+	if _, err := sb.ReadFileLimit(ctx, "a.txt", 4); !errors.Is(err, sandbox.ErrFileTooLarge) {
+		t.Fatalf("over the limit = %v", err)
+	}
+	calls := sb.Calls()
+	if len(calls) != 2 || calls[0].Limit != 5 || calls[1].Limit != 4 {
+		t.Fatalf("calls = %+v", calls)
+	}
+	sb.ResetCalls()
+	if _, err := sb.ReadFile(ctx, "a.txt"); err != nil || sb.Calls()[0].Limit != sandbox.MaxReadFile {
+		t.Fatalf("ReadFile: %v, calls %+v", err, sb.Calls())
+	}
+}

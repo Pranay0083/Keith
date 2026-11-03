@@ -27,7 +27,18 @@ const WorkspaceDir = "/workspace"
 // ShellResult keeps. Providers keep the tail when output is longer.
 const MaxExecOutput = 1 << 20
 
+// MaxReadFile is the most bytes Sandbox.ReadFile returns; larger files
+// fail with ErrFileTooLarge. Sandbox.ReadFileLimit takes its own limit.
+const MaxReadFile = 64 << 20
+
 var (
+	// ErrFileTooLarge: ReadFile or ReadFileLimit was given a file larger
+	// than its limit. The file is not read into memory.
+	ErrFileTooLarge = errors.New("sandbox: file too large")
+	// ErrNotRegular: ReadFile or ReadFileLimit was given a path that is
+	// not a regular file or a symlink to one, such as a directory, a
+	// device (/dev/zero), a FIFO or a socket. Nothing is read.
+	ErrNotRegular = errors.New("sandbox: not a regular file")
 	// ErrNotFound: no sandbox, snapshot or shell with that ID or name.
 	ErrNotFound = errors.New("sandbox: not found")
 	// ErrNotSupported: the provider cannot do this operation.
@@ -108,8 +119,16 @@ type Sandbox interface {
 	// stderr chunks, interleaved, as they arrive, from one goroutine.
 	Exec(ctx context.Context, req ExecRequest, onOutput func(chunk []byte)) (*ExecResult, error)
 
-	// ReadFile returns a file's contents.
+	// ReadFile is ReadFileLimit with MaxReadFile.
 	ReadFile(ctx context.Context, path string) ([]byte, error)
+	// ReadFileLimit returns the contents of a regular file of at most
+	// limit bytes, following symlinks; limit <= 0 means MaxReadFile. A
+	// larger file fails with an error wrapping ErrFileTooLarge, and a path
+	// that is not a regular file with one wrapping ErrNotRegular, before
+	// anything is read. Implementations also stop reading after limit+1
+	// bytes, so a file that changes after the check (or a symlink swapped
+	// for /dev/zero) can't make one call hold more than that in memory.
+	ReadFileLimit(ctx context.Context, path string, limit int64) ([]byte, error)
 	// WriteFile creates or replaces a file, creating parent directories,
 	// owned by the default user.
 	WriteFile(ctx context.Context, path string, data []byte, mode fs.FileMode) error

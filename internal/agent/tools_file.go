@@ -32,21 +32,26 @@ const (
 const pathDesc = "The file's path: absolute under /workspace, or relative to /workspace (for example \"api/src/main.go\")."
 
 // loadFile reads a file for a file tool. A missing file is (nil, false,
-// nil). Other failures become a model-visible result in res, except a
-// cancelled ctx, which is returned as err.
+// nil). A file over maxFileBytes, or a path that is not a regular file (a
+// directory, a device such as /dev/zero, a FIFO, or a symlink to one), is
+// refused by the sandbox before anything is read into memory. Failures
+// become a model-visible result in res, except a cancelled ctx, which is
+// returned as err.
 func loadFile(ctx context.Context, run *Run, p string) (data []byte, exists bool, res *Result, err error) {
-	data, err = run.Sandbox.ReadFile(ctx, p)
+	data, err = run.Sandbox.ReadFileLimit(ctx, p, maxFileBytes)
 	switch {
 	case err == nil:
-		if len(data) > maxFileBytes {
-			r := errorResult(fmt.Sprintf("%s is too large (%d bytes) for this tool; use shell commands (for example sed -n '1,200p' or head) instead.", p, len(data)))
-			return nil, true, &r, nil
-		}
 		return data, true, nil, nil
 	case errors.Is(err, fs.ErrNotExist):
 		return nil, false, nil, nil
 	case ctx.Err() != nil:
 		return nil, false, nil, ctx.Err()
+	case errors.Is(err, sandbox.ErrFileTooLarge):
+		r := errorResult(fmt.Sprintf("%s is too large for this tool (over %d MiB); use shell commands (for example sed -n '1,200p' or head) instead.", p, maxFileBytes>>20))
+		return nil, true, &r, nil
+	case errors.Is(err, sandbox.ErrNotRegular):
+		r := errorResult(fmt.Sprintf("%s is not a regular file (it is a directory, a device, a FIFO or a socket, or a symlink to one), so the file tools can't open it. Use shell commands to inspect it.", p))
+		return nil, true, &r, nil
 	}
 	r := errorResult(fmt.Sprintf("Could not read %s: %v", p, err))
 	return nil, false, &r, nil

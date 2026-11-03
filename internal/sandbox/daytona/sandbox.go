@@ -69,19 +69,70 @@ func (s *daytonaSandbox) prepareWorkspace(ctx context.Context) error {
 	return nil
 }
 
-// ReadFile downloads a file with the toolbox's streaming download.
+// ReadFile is ReadFileLimit with sandbox.MaxReadFile.
 func (s *daytonaSandbox) ReadFile(ctx context.Context, p string) ([]byte, error) {
+	return s.ReadFileLimit(ctx, p, sandbox.MaxReadFile)
+}
+
+// Exit codes of readCheckScript.
+const (
+	readNoFile     = 44
+	readIsDir      = 45
+	readNotRegular = 46
+	readTooLarge   = 47
+)
+
+// readCheckScript exits 0 if abs is a regular file (symlinks followed) of
+// at most limit bytes, and with one of the read* codes otherwise. It
+// prints nothing, so its response stays small.
+func readCheckScript(abs string, limit int64) string {
+	script := fmt.Sprintf(`p=%s; [ -e "$p" ] || exit %d; [ -d "$p" ] && exit %d; [ -f "$p" ] || exit %d; `+
+		`s=$(stat -L -c %%s -- "$p" 2>/dev/null) && [ "$s" -gt %d ] && exit %d; exit 0`,
+		sbutil.Quote(abs), readNoFile, readIsDir, readNotRegular, limit, readTooLarge)
+	return "sh -c " + sbutil.Quote(script) + " < /dev/null > /dev/null 2>&1"
+}
+
+// ReadFileLimit checks the file with a command, then downloads it with
+// the toolbox's streaming download, reading at most limit+1 bytes.
+func (s *daytonaSandbox) ReadFileLimit(ctx context.Context, p string, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = sandbox.MaxReadFile
+	}
+	limit = min(limit, 1<<50)
 	abs := sbutil.ResolvePath(p)
 	ctx, cancel := withDefaultTimeout(ctx, fileOpTimeout)
 	defer cancel()
+
+	res, err := s.sb.Process.ExecuteCommand(ctx, readCheckScript(abs, limit), sdkoptions.WithExecuteTimeout(time.Minute))
+	if err != nil {
+		return nil, sbErr(fmt.Sprintf("read %s in %s: check", abs, s.id), err)
+	}
+	switch res.ExitCode {
+	case 0:
+	case readNoFile:
+		return nil, &fs.PathError{Op: "read", Path: abs, Err: fs.ErrNotExist}
+	case readIsDir:
+		return nil, &fs.PathError{Op: "read", Path: abs, Err: fmt.Errorf("is a directory: %w", sandbox.ErrNotRegular)}
+	case readNotRegular:
+		return nil, &fs.PathError{Op: "read", Path: abs, Err: sandbox.ErrNotRegular}
+	case readTooLarge:
+		return nil, &fs.PathError{Op: "read", Path: abs, Err: sandbox.ErrFileTooLarge}
+	default:
+		return nil, fmt.Errorf("daytona: read %s in %s: check exited %d", abs, s.id, res.ExitCode)
+	}
+
 	rc, err := s.sb.FileSystem.DownloadFileStream(ctx, abs)
 	if err != nil {
 		return nil, s.fileErr("read", abs, err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("daytona: read %s: %w", abs, err)
+	}
+	if int64(len(data)) > limit {
+		// The file grew or was swapped after the check.
+		return nil, &fs.PathError{Op: "read", Path: abs, Err: sandbox.ErrFileTooLarge}
 	}
 	return data, nil
 }
