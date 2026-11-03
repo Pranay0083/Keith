@@ -112,7 +112,7 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
    - **Two GitHub installation tokens** per session:
      - *Sandbox token*: `contents: write` on the session's repos only. It reaches the sandbox only as `/run/keith/git-token`, read by the git credential helper. The helper is installed as root at `/usr/local/bin/git-credential-keith` and answers only for `GIT_BASE_URL`'s host. The token file is rewritten from the token source's refresh hook, so the token rotates without re-cloning.
      - *Worker token*: `WorkerPermissions`, on the session's repos plus the issue's repo. It backs the `RepoHost` behind `read_issue` and `open_pr`, and never enters the sandbox.
-     - In V1 all of a session's repos must be on one installation; otherwise the session fails with `repos_span_installations`.
+     - In V1 all of a session's repos must be on one installation. The API refuses to create a session that spans two (`422`); a session whose repos end up on two anyway fails with `repos_span_installations`.
    - **The sandbox** starts from the repo's snapshot (a single-repo session on the same provider) or from the base template (`SANDBOX_TEMPLATE`). Org and repo secrets are its environment variables; a repo secret overrides an org secret of the same name.
    - **Repos** are cloned as the sandbox user to `/workspace/<name>`, from plain URLs (`GIT_BASE_URL` + `owner/name.git`; never a token in a URL). The worker checks out `agent/<session-id>`: the remote branch if it exists, else a new branch from the default branch.
 3. **Set up** (status `setting_up`).

@@ -211,6 +211,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) err
 			fields["repo_ids"] = "at least one repo is required"
 		case len(repoIDs) > maxReposPerRun:
 			fields["repo_ids"] = "at most 10 repos"
+		case !oneInstallation(repoIDs, accessible):
+			// The worker mints one token for all of a session's repos,
+			// so it would fail the session (repos_span_installations).
+			fields["repo_ids"] = "must all be on one GitHub App installation (including the issue's repo)"
 		}
 	}
 
@@ -333,6 +337,17 @@ func (s *Server) checkCap(ctx context.Context, tx *store.Store, orgID string) er
 		}
 	}
 	return nil
+}
+
+// oneInstallation reports whether every repo in ids is on the same
+// installation. Every ID must be in repos.
+func oneInstallation(ids []string, repos map[string]store.Repo) bool {
+	for _, id := range ids[1:] {
+		if repos[id].InstallationID != repos[ids[0]].InstallationID {
+			return false
+		}
+	}
+	return true
 }
 
 func isKnownProvider(p string) bool {

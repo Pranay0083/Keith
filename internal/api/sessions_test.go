@@ -221,6 +221,42 @@ func TestCreateSessionCapIT(t *testing.T) {
 	}
 }
 
+// In V1 a session's repos must share one installation: the worker mints
+// one token for all of them, and fails a session that spans two. The API
+// refuses it up front instead of accepting it and counting it against
+// the cap.
+func TestCreateSessionOneInstallationIT(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	inst2, err := w.st.UpsertInstallation(ctx, store.UpsertInstallationParams{OrgID: w.org.ID, InstallationID: randID(), AccountLogin: "acme-two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := w.st.UpsertRepo(ctx, store.UpsertRepoParams{InstallationID: inst2.InstallationID, GitHubRepoID: randID(), FullName: "acme-two/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/orgs/" + w.org.ID + "/sessions"
+	for name, body := range map[string]map[string]any{
+		"two installations": {"prompt": "p", "repo_ids": []string{w.repo.ID, other.ID}},
+		"issue on another":  {"prompt": "p", "repo_ids": []string{w.repo.ID}, "issue_url": "https://github.com/acme-two/x/issues/3"},
+	} {
+		e := wantError(t, w.do("POST", base, body, w.as(w.member.ID)), 422, codeValidationFailed)
+		if !strings.Contains(e.Fields["repo_ids"], "one GitHub App installation") {
+			t.Errorf("%s: fields %+v", name, e.Fields)
+		}
+	}
+	if page, _ := w.st.ListSessions(ctx, store.ListSessionsParams{OrgID: w.org.ID}); len(page.Sessions) != 0 {
+		t.Fatalf("sessions created: %+v", page.Sessions)
+	}
+	if n := len(w.q.Runs()); n != 0 {
+		t.Fatalf("%d run_session enqueued", n)
+	}
+	// Several repos of one installation, and one repo of the other, are fine.
+	w.create(t, map[string]any{"prompt": "p", "repo_ids": []string{w.repo.ID, w.repo2.ID}})
+	w.create(t, map[string]any{"prompt": "p", "repo_ids": []string{other.ID}, "issue_url": "https://github.com/acme-two/x/issues/3"})
+}
+
 // The per-org cap also holds for resumes: a follow-up to a finished
 // session, or an answer to a waiting one, makes the session active again.
 func TestResumeCapIT(t *testing.T) {

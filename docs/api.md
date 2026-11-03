@@ -280,7 +280,7 @@ Any member.
 | Field | Rule |
 |---|---|
 | `prompt` | String, at most 32,000 characters. May be `""` only if `issue_url` is set. |
-| `repo_ids` | 1 to 10 distinct IDs of `accessible` repos in this org. |
+| `repo_ids` | 1 to 10 distinct IDs of `accessible` repos in this org, all on one GitHub App installation (the issue's repo included). |
 | `issue_url` | Optional. `https://github.com/{owner}/{repo}/issues/{number}`, and `{owner}/{repo}` must be one of the tagged repos (code `issue_repo_not_tagged` in `fields.issue_url`). |
 | `provider` | Optional. `anthropic` or `gemini`; default is the org's `default_llm_provider`, then the server default. Unconfigured: `422 provider_unavailable`. |
 | `model` | Optional, at most 100 characters; default is the provider's default model. |
