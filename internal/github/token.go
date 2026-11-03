@@ -37,6 +37,11 @@ var (
 	// SandboxPermissions is the sandbox token: clone and push, nothing
 	// else.
 	SandboxPermissions = Permissions{Contents: Write}
+	// PushPermissions is the worker's push token: it updates a session's
+	// agent/<session-id> branch from outside the sandbox (ReceivePack),
+	// one repo per token, revoked right after the push. It never enters
+	// the sandbox.
+	PushPermissions = Permissions{Contents: Write}
 	// WorkerPermissions is the worker's own token for reading issues and
 	// opening PRs from outside the sandbox.
 	WorkerPermissions = Permissions{
