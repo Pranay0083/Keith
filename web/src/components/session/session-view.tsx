@@ -47,6 +47,11 @@ export function SessionView({ id }: { id: string }) {
   // The REST detail: on load, when the session ends, and when a PR opens
   // (both change fields the header shows).
   const terminal = isTerminal(state.status);
+
+  // A stop applies to the run it was asked for. Once that run ends, forget
+  // it, so a follow-up that resumes the session can be stopped again.
+  if (stopRequested && terminal) setStopRequested(false);
+
   useEffect(() => {
     let live = true;
     api.getSession(id).then(
