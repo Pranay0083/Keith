@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,6 +85,11 @@ type Options struct {
 	// Labels are added to every container and snapshot image (for
 	// example to tag test runs for cleanup).
 	Labels map[string]string
+	// ExtraHosts are added to every container's /etc/hosts
+	// (docker run --add-host), for example
+	// "host.docker.internal:host-gateway" so a sandbox on Linux can reach
+	// a server on the host.
+	ExtraHosts []string
 	// Docker is the docker CLI binary (default "docker" on PATH).
 	Docker string
 	// Logger receives warnings (default slog.Default()).
@@ -239,6 +245,9 @@ func (p *Provider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Sandb
 	}
 	for _, k := range slices.Sorted(maps.Keys(spec.Labels)) {
 		args = append(args, "--label", k+"="+spec.Labels[k])
+	}
+	for _, h := range p.opts.ExtraHosts {
+		args = append(args, "--add-host", h)
 	}
 	if p.opts.User != "-" {
 		args = append(args, "--user", p.opts.User)
@@ -622,7 +631,17 @@ var tagUnsafe = regexp.MustCompile(`[^a-z0-9_.-]+`)
 // Snapshot implements sandbox.Sandbox with docker commit. The image is
 // tagged keith-snapshot:<name>-<random> (so image pruning keeps it) and
 // labeled keith.snapshot=1; its image ID is returned.
+//
+// docker commit copies the container's environment into the image, and
+// Spec.Env carries the org's secrets. Every variable whose value differs
+// from the container's image is therefore blanked in the snapshot
+// (ENV NAME=), so secrets never land in a snapshot image; sandboxes
+// started from it get their own Spec.Env.
 func (s *Sandbox) Snapshot(ctx context.Context, name string) (string, error) {
+	scrub, err := s.addedEnv(ctx)
+	if err != nil {
+		return "", fmt.Errorf("docker: snapshot %s: %w", s.id, err)
+	}
 	tag := strings.Trim(tagUnsafe.ReplaceAllString(strings.ToLower(name), "-"), "-.")
 	if len(tag) > 100 {
 		tag = tag[:100]
@@ -631,6 +650,9 @@ func (s *Sandbox) Snapshot(ctx context.Context, name string) (string, error) {
 		tag = "snapshot"
 	}
 	args := []string{"commit", "--message", name, "--change", "LABEL " + LabelSnapshot + "=1"}
+	for _, k := range scrub {
+		args = append(args, "--change", "ENV "+k+"=")
+	}
 	for _, k := range slices.Sorted(maps.Keys(s.p.opts.Labels)) {
 		args = append(args, "--change", "LABEL "+strconv.Quote(k)+"="+strconv.Quote(s.p.opts.Labels[k]))
 	}
@@ -640,6 +662,38 @@ func (s *Sandbox) Snapshot(ctx context.Context, name string) (string, error) {
 		return "", fmt.Errorf("docker: snapshot %s: %w", s.id, wrap(err))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// addedEnv returns the names of the container's environment variables
+// that its image does not set to the same value: the Spec.Env entries.
+func (s *Sandbox) addedEnv(ctx context.Context) ([]string, error) {
+	out, err := s.p.run(ctx, nil, nil, "inspect", "--type", "container", "--format", `{{.Image}}`, s.id)
+	if err != nil {
+		return nil, wrap(err)
+	}
+	image := strings.TrimSpace(string(out))
+	var cenv, ienv []string
+	for _, x := range []struct {
+		kind, id string
+		dst      *[]string
+	}{{"container", s.id, &cenv}, {"image", image, &ienv}} {
+		out, err := s.p.run(ctx, nil, nil, "inspect", "--type", x.kind, "--format", `{{json .Config.Env}}`, x.id)
+		if err != nil {
+			return nil, wrap(err)
+		}
+		if err := json.Unmarshal(bytes.TrimSpace(out), x.dst); err != nil {
+			return nil, fmt.Errorf("inspect %s env: %w", x.kind, err)
+		}
+	}
+	var added []string
+	for _, kv := range cenv {
+		k, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(ienv, kv) && envKeyRE.MatchString(k) {
+			added = append(added, k)
+		}
+	}
+	slices.Sort(added)
+	return slices.Compact(added), nil
 }
 
 // Delete implements sandbox.Sandbox with docker rm -f. Deleting a missing

@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -217,6 +218,21 @@ func TestDockerRoundTrip(t *testing.T) {
 		res, _ := sb2.Exec(ctx, sandbox.ExecRequest{Cmd: "id -un"}, nil)
 		if res.Stdout != "agent\n" {
 			t.Fatalf("user in snapshot sandbox = %q", res.Stdout)
+		}
+		// Spec.Env (the org's secrets) must not be baked into the image.
+		out, err := exec.Command("docker", "image", "inspect", "--format", "{{json .Config.Env}}", snap).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "s3cr3t") || strings.Contains(string(out), "MULTI=a") {
+			t.Fatalf("snapshot image env holds a secret: %s", out)
+		}
+		if !strings.Contains(string(out), "PATH=") {
+			t.Fatalf("snapshot image env lost the image's own variables: %s", out)
+		}
+		res, _ = sb2.Exec(ctx, sandbox.ExecRequest{Cmd: `echo "[$KEITH_SECRET]"`}, nil)
+		if res.Stdout != "[]\n" {
+			t.Fatalf("secret in snapshot sandbox env = %q", res.Stdout)
 		}
 		if _, err := p.Create(ctx, sandbox.Spec{SnapshotID: "sha256:" + strings.Repeat("0", 64)}); !errors.Is(err, sandbox.ErrNotFound) {
 			t.Fatalf("create from unknown snapshot: %v", err)
