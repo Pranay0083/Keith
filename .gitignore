@@ -4,3 +4,6 @@ internal/config/secrets/
 *.port
 .venv
 __pycache__
+# Runtime files
+*.log
+*.pid
