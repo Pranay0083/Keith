@@ -1,0 +1,21 @@
+# Build context for the root Dockerfile (the keith binary). It needs only
+# the Go module: go.mod, go.sum and the packages under cmd/, internal/ and
+# migrations/ (embedded SQL). Everything else stays out: .git, .claude
+# worktrees, web/ and its node_modules, docs, prototypes, local env files
+# and keys. Add a line here if a new top-level Go directory appears.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+!migrations
+
+# Never send secrets or local clutter, even from inside the dirs above.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/node_modules
+**/.DS_Store
+**/*.log
+internal/config/secrets

@@ -1,5 +1,6 @@
 # Local Postgres and Redis for development and the KEITH_IT=1 integration
-# tests. The api and worker services join this file later.
+# tests. The api and worker services are here too, under the `app`
+# profile, so they start only when asked for (see the end of this file).
 #
 #   docker compose up -d --wait
 #   export DATABASE_URL='postgres://keith:keith@localhost:5432/keith?sslmode=disable'
@@ -14,6 +15,38 @@
 #   KEITH_POSTGRES_PORT=55432 KEITH_REDIS_PORT=56379 docker compose -p keith-dev up -d --wait
 #
 # Ports bind to 127.0.0.1 only; the credentials are for local use.
+#
+# The whole stack in containers (SETUP.md, "Local development"):
+#
+#   docker build -f sandbox/base.Dockerfile -t keith-sandbox:latest sandbox
+#   docker compose --profile app up -d --build --wait
+#   docker compose --profile app logs -f api worker
+#   docker compose --profile app down
+
+# Shared by api and worker: one image (the root Dockerfile), the operator's
+# .env, and the compose Postgres and Redis in place of whatever DATABASE_URL
+# and REDIS_URL .env holds for running on the host.
+x-keith-app: &keith-app
+  profiles: ["app"]
+  build:
+    context: .
+    args:
+      VERSION: ${KEITH_VERSION:-compose}
+  image: keith:dev
+  init: true
+  env_file:
+    - path: .env
+      required: false
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+x-keith-env: &keith-env
+  DATABASE_URL: postgres://${POSTGRES_USER:-keith}:${POSTGRES_PASSWORD:-keith}@postgres:5432/${POSTGRES_DB:-keith}?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
 
 services:
   postgres:
@@ -50,6 +83,61 @@ services:
       retries: 30
       start_period: 5s
     restart: unless-stopped
+
+  # ---- app profile: docker compose --profile app ... -------------------
+  #
+  # Configuration comes from .env (SETUP.md lists every variable). Two
+  # things differ from running on the host:
+  #   - GITHUB_APP_PRIVATE_KEY_PATH is read inside the container, so either
+  #     give the key inline as GITHUB_APP_PRIVATE_KEY (one line in single
+  #     quotes, newlines as \n; SETUP.md has a one-liner) or mount the .pem,
+  #     readable by uid 10001, and point the path at the mount.
+  #   - PUBLIC_URL must match the published api port below, for example
+  #     http://localhost:8080 (KEITH_API_PORT changes the host side).
+  # Both services migrate the database at start (behind an advisory lock).
+
+  api:
+    <<: *keith-app
+    command: ["api"]
+    environment:
+      <<: *keith-env
+      LISTEN_ADDR: ":8080"
+    ports:
+      - "127.0.0.1:${KEITH_API_PORT:-8080}:8080"
+    # keith api drains requests and closes WebSockets for up to 25 s.
+    stop_grace_period: 30s
+
+  worker:
+    <<: *keith-app
+    command: ["worker"]
+    environment:
+      <<: *keith-env
+      SANDBOX_PROVIDER: docker
+    # SECURITY: mounting the docker socket gives this container
+    # root-equivalent control of the host (it can start a privileged
+    # container that mounts /). That is acceptable for local development
+    # only. In production run the worker with SANDBOX_PROVIDER=daytona
+    # (plus DAYTONA_API_KEY) and no socket.
+    #
+    # Sandboxes the worker starts are siblings on the host's daemon, not
+    # children of this container, so:
+    #   - their image must exist on the host first:
+    #     docker build -f sandbox/base.Dockerfile -t keith-sandbox:latest sandbox
+    #   - they clone from GIT_BASE_URL themselves; leave it at its default,
+    #     https://github.com/.
+    #
+    # The image runs as the non-root user keith (uid/gid 10001). group_add gives
+    # it the socket's group: 0 suits Docker Desktop (the socket is
+    # root:root 0660 inside containers); on Linux set
+    # KEITH_DOCKER_GID=$(stat -c %g /var/run/docker.sock). For rootless
+    # Docker, point KEITH_DOCKER_SOCKET at its socket
+    # ($XDG_RUNTIME_DIR/docker.sock).
+    volumes:
+      - ${KEITH_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    group_add:
+      - "${KEITH_DOCKER_GID:-0}"
+    # Running sessions get time to checkpoint and park on SIGTERM.
+    stop_grace_period: 45s
 
 volumes:
   postgres-data:
