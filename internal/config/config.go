@@ -49,6 +49,9 @@ const (
 	DefaultAnthropicModel  = "claude-opus-5-5"
 	DefaultSandboxProvider = SandboxProviderDocker
 	DefaultListenAddr      = ":8080"
+	// DefaultMaxActiveSessionsPerOrg is MAX_ACTIVE_SESSIONS_PER_ORG's
+	// default.
+	DefaultMaxActiveSessionsPerOrg = 5
 )
 
 // SecretsKeySize is the length in bytes of the decoded SECRETS_KEY.
@@ -75,6 +78,14 @@ type Config struct {
 	// defaults to claude-opus-5-5 for anthropic and must be set for
 	// gemini.
 	DefaultModel string
+	// DefaultGeminiModel (DEFAULT_GEMINI_MODEL, optional) is the model
+	// for gemini sessions that name none when DEFAULT_LLM_PROVIDER is not
+	// gemini. See DefaultModelFor.
+	DefaultGeminiModel string
+	// MaxActiveSessionsPerOrg (MAX_ACTIVE_SESSIONS_PER_ORG, default 5)
+	// caps an org's sessions that are queued or running; the api answers
+	// 429 beyond it.
+	MaxActiveSessionsPerOrg int
 
 	// SandboxProvider (SANDBOX_PROVIDER) is "docker" (default, local dev)
 	// or "daytona".
@@ -90,6 +101,9 @@ type Config struct {
 	GitHubAppClientID     string
 	GitHubAppClientSecret string
 	GitHubWebhookSecret   string
+	// GitHubAppSlug (GITHUB_APP_SLUG, optional) is the App's URL name
+	// (github.com/apps/<slug>). The api looks it up once if unset.
+	GitHubAppSlug string
 	// GitHubAppPrivateKey is the App's PEM private key, from
 	// GITHUB_APP_PRIVATE_KEY (the PEM itself; literal \n sequences are
 	// turned into newlines) or the file at GITHUB_APP_PRIVATE_KEY_PATH.
@@ -129,12 +143,14 @@ func LoadFrom(getenv func(string) string) (*Config, error) {
 		GeminiAPIKey:          get("GEMINI_API_KEY"),
 		DefaultLLMProvider:    orDefault(get("DEFAULT_LLM_PROVIDER"), DefaultLLMProvider),
 		DefaultModel:          get("DEFAULT_MODEL"),
+		DefaultGeminiModel:    get("DEFAULT_GEMINI_MODEL"),
 		SandboxProvider:       orDefault(get("SANDBOX_PROVIDER"), DefaultSandboxProvider),
 		DaytonaAPIKey:         get("DAYTONA_API_KEY"),
 		DaytonaAPIURL:         get("DAYTONA_API_URL"),
 		GitHubAppClientID:     get("GITHUB_APP_CLIENT_ID"),
 		GitHubAppClientSecret: get("GITHUB_APP_CLIENT_SECRET"),
 		GitHubWebhookSecret:   get("GITHUB_WEBHOOK_SECRET"),
+		GitHubAppSlug:         get("GITHUB_APP_SLUG"),
 		SessionSecret:         get("SESSION_SECRET"),
 		ListenAddr:            orDefault(get("LISTEN_ADDR"), DefaultListenAddr),
 	}
@@ -153,6 +169,15 @@ func LoadFrom(getenv func(string) string) (*Config, error) {
 	default:
 		errs = append(errs, fmt.Errorf("SANDBOX_PROVIDER: unknown provider %q (want %s or %s)",
 			c.SandboxProvider, SandboxProviderDocker, SandboxProviderDaytona))
+	}
+
+	c.MaxActiveSessionsPerOrg = DefaultMaxActiveSessionsPerOrg
+	if v := get("MAX_ACTIVE_SESSIONS_PER_ORG"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			errs = append(errs, fmt.Errorf("MAX_ACTIVE_SESSIONS_PER_ORG: %q is not a positive integer", v))
+		}
+		c.MaxActiveSessionsPerOrg = n
 	}
 
 	if v := get("GITHUB_APP_ID"); v != "" {
@@ -257,6 +282,42 @@ func (c *Config) Validate(role Role) error {
 	return nil
 }
 
+// LLMProviderConfigured reports whether provider is known and its API
+// key is set.
+func (c *Config) LLMProviderConfigured(provider string) bool {
+	switch provider {
+	case LLMProviderAnthropic:
+		return c.AnthropicAPIKey != ""
+	case LLMProviderGemini:
+		return c.GeminiAPIKey != ""
+	}
+	return false
+}
+
+// DefaultModelFor returns the model a new session on provider uses when
+// it names none, or "" if there is none:
+//   - anthropic: DEFAULT_MODEL when DEFAULT_LLM_PROVIDER is anthropic,
+//     else DefaultAnthropicModel;
+//   - gemini: DEFAULT_GEMINI_MODEL, else DEFAULT_MODEL when
+//     DEFAULT_LLM_PROVIDER is gemini.
+func (c *Config) DefaultModelFor(provider string) string {
+	switch provider {
+	case LLMProviderAnthropic:
+		if c.DefaultLLMProvider == LLMProviderAnthropic && c.DefaultModel != "" {
+			return c.DefaultModel
+		}
+		return DefaultAnthropicModel
+	case LLMProviderGemini:
+		if c.DefaultGeminiModel != "" {
+			return c.DefaultGeminiModel
+		}
+		if c.DefaultLLMProvider == LLMProviderGemini {
+			return c.DefaultModel
+		}
+	}
+	return ""
+}
+
 // String describes the configuration with every secret replaced by "set"
 // or "unset", so it is safe to log.
 func (c *Config) String() string {
@@ -267,13 +328,15 @@ func (c *Config) String() string {
 		return "unset"
 	}
 	return fmt.Sprintf("Config{DatabaseURL:%s RedisURL:%s AnthropicAPIKey:%s GeminiAPIKey:%s "+
-		"DefaultLLMProvider:%s DefaultModel:%s SandboxProvider:%s DaytonaAPIKey:%s DaytonaAPIURL:%s "+
-		"GitHubAppID:%d GitHubAppClientID:%s GitHubAppClientSecret:%s GitHubWebhookSecret:%s "+
+		"DefaultLLMProvider:%s DefaultModel:%s DefaultGeminiModel:%s MaxActiveSessionsPerOrg:%d "+
+		"SandboxProvider:%s DaytonaAPIKey:%s DaytonaAPIURL:%s "+
+		"GitHubAppID:%d GitHubAppClientID:%s GitHubAppClientSecret:%s GitHubWebhookSecret:%s GitHubAppSlug:%s "+
 		"GitHubAppPrivateKey:%s PublicURL:%s WebOrigin:%s SessionSecret:%s SecretsKey:%s ListenAddr:%s}",
 		set(c.DatabaseURL != ""), set(c.RedisURL != ""), set(c.AnthropicAPIKey != ""), set(c.GeminiAPIKey != ""),
-		c.DefaultLLMProvider, c.DefaultModel, c.SandboxProvider, set(c.DaytonaAPIKey != ""), c.DaytonaAPIURL,
+		c.DefaultLLMProvider, c.DefaultModel, c.DefaultGeminiModel, c.MaxActiveSessionsPerOrg,
+		c.SandboxProvider, set(c.DaytonaAPIKey != ""), c.DaytonaAPIURL,
 		c.GitHubAppID, c.GitHubAppClientID, set(c.GitHubAppClientSecret != ""), set(c.GitHubWebhookSecret != ""),
-		set(len(c.GitHubAppPrivateKey) > 0), c.PublicURL, c.WebOrigin, set(c.SessionSecret != ""),
+		c.GitHubAppSlug, set(len(c.GitHubAppPrivateKey) > 0), c.PublicURL, c.WebOrigin, set(c.SessionSecret != ""),
 		set(len(c.SecretsKey) > 0), c.ListenAddr)
 }
 

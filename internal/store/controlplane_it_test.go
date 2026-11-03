@@ -294,3 +294,37 @@ func TestListOrgSecrets(t *testing.T) {
 		t.Fatalf("unknown org secrets %+v", got)
 	}
 }
+
+func TestEnsurePersonalOrg(t *testing.T) {
+	s := storetest.New(t)
+	ctx := ctxT(t)
+	u := must(s.UpsertUser(ctx, store.UpsertUserParams{GitHubUserID: 424242, GitHubLogin: "hubot"}))
+	if !must(s.EnsurePersonalOrg(ctx, u.ID, "hubot")) {
+		t.Fatal("no org created on first sign-in")
+	}
+	if must(s.EnsurePersonalOrg(ctx, u.ID, "hubot")) {
+		t.Fatal("second org created")
+	}
+	orgs := must(s.ListOrgsForUser(ctx, u.ID))
+	if len(orgs) != 1 || orgs[0].Org.Name != "hubot" || orgs[0].Role != store.RoleOwner {
+		t.Fatalf("orgs %+v", orgs)
+	}
+	_, err := s.EnsurePersonalOrg(ctx, missingID, "x")
+	isErr(t, err, store.ErrNotFound)
+
+	// Concurrent first sign-ins create one org.
+	u2 := must(s.UpsertUser(ctx, store.UpsertUserParams{GitHubUserID: 434343, GitHubLogin: "race"}))
+	errs := make(chan error, 8)
+	for range 8 {
+		go func() {
+			_, err := s.EnsurePersonalOrg(ctx, u2.ID, "race")
+			errs <- err
+		}()
+	}
+	for range 8 {
+		ok(t, <-errs)
+	}
+	if n := len(must(s.ListOrgsForUser(ctx, u2.ID))); n != 1 {
+		t.Fatalf("concurrent sign-ins made %d orgs", n)
+	}
+}

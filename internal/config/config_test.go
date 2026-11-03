@@ -184,3 +184,52 @@ func TestStringRedactsSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIAdditions(t *testing.T) {
+	c, err := LoadFrom(env(map[string]string{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxActiveSessionsPerOrg != DefaultMaxActiveSessionsPerOrg {
+		t.Errorf("cap default = %d", c.MaxActiveSessionsPerOrg)
+	}
+	if c.LLMProviderConfigured("anthropic") || c.LLMProviderConfigured("nope") {
+		t.Error("unconfigured provider reported configured")
+	}
+	if got := c.DefaultModelFor("anthropic"); got != DefaultAnthropicModel {
+		t.Errorf("anthropic default = %q", got)
+	}
+	if got := c.DefaultModelFor("gemini"); got != "" {
+		t.Errorf("gemini default without DEFAULT_GEMINI_MODEL = %q", got)
+	}
+
+	c, err = LoadFrom(env(map[string]string{
+		"MAX_ACTIVE_SESSIONS_PER_ORG": "12", "DEFAULT_GEMINI_MODEL": "gemini-3-pro", "GEMINI_API_KEY": "g",
+		"DEFAULT_MODEL": "claude-x", "GITHUB_APP_SLUG": "keith-agent",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxActiveSessionsPerOrg != 12 || c.GitHubAppSlug != "keith-agent" || !c.LLMProviderConfigured("gemini") {
+		t.Errorf("parsed %v", c)
+	}
+	if c.DefaultModelFor("anthropic") != "claude-x" || c.DefaultModelFor("gemini") != "gemini-3-pro" {
+		t.Errorf("defaults %q %q", c.DefaultModelFor("anthropic"), c.DefaultModelFor("gemini"))
+	}
+
+	// With gemini as the server default, DEFAULT_MODEL is gemini's and
+	// anthropic falls back to its constant.
+	c, err = LoadFrom(env(map[string]string{"DEFAULT_LLM_PROVIDER": "gemini", "DEFAULT_MODEL": "gemini-2"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DefaultModelFor("gemini") != "gemini-2" || c.DefaultModelFor("anthropic") != DefaultAnthropicModel {
+		t.Errorf("gemini-default server: %q %q", c.DefaultModelFor("gemini"), c.DefaultModelFor("anthropic"))
+	}
+
+	for _, bad := range []string{"0", "-1", "x"} {
+		if _, err := LoadFrom(env(map[string]string{"MAX_ACTIVE_SESSIONS_PER_ORG": bad})); err == nil {
+			t.Errorf("MAX_ACTIVE_SESSIONS_PER_ORG=%q accepted", bad)
+		}
+	}
+}

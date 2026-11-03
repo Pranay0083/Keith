@@ -228,3 +228,35 @@ func (s *Store) ListRepoProfiles(ctx context.Context, orgID string) (map[string]
 	}
 	return out, wrap(op, rows.Err())
 }
+
+// EnsurePersonalOrg gives a user who belongs to no org a new org named
+// name, with them as owner, and reports whether it created one. The
+// user's row is locked meanwhile, so two concurrent sign-ins create one
+// org. Sign-in calls it, so every signed-in user has an org.
+func (s *Store) EnsurePersonalOrg(ctx context.Context, userID, name string) (created bool, err error) {
+	const op = "ensure personal org"
+	if !validID(userID) {
+		return false, errNotFound(op)
+	}
+	err = s.WithTx(ctx, func(tx *Store) error {
+		var member bool
+		err := tx.db.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM org_members WHERE user_id = u.id)
+			FROM users u WHERE u.id = $1 FOR UPDATE OF u`, userID).Scan(&member)
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		if err != nil || member {
+			return err
+		}
+		if _, err := tx.CreateOrg(ctx, name, userID); err != nil {
+			return err
+		}
+		created = true
+		return nil
+	})
+	if err != nil {
+		return false, wrap(op, err)
+	}
+	return created, nil
+}
