@@ -112,3 +112,37 @@ func TestFailedCloneIsProvisionedAgainOnFollowUp(t *testing.T) {
 		t.Errorf("status = %s", st)
 	}
 }
+
+// The credential helper is installed by a root script. Root must not
+// run anything found through the sandbox user's PATH, whose first entry
+// (~/.local/bin) the agent can write: every command is a shell builtin
+// or an absolute path.
+func TestRootScriptUsesAbsolutePaths(t *testing.T) {
+	e := newEnv(t)
+	s := e.newSession()
+	e.llm.Push(llmtest.Text("done"))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	var roots []sandbox.ExecRequest
+	for _, r := range e.sandbox(s.ID).ExecRequests() {
+		if r.User == "root" {
+			roots = append(roots, r)
+		}
+	}
+	if len(roots) != 1 {
+		t.Fatalf("root execs = %d", len(roots))
+	}
+	builtins := map[string]bool{"set": true, "export": true, "printf": true}
+	for _, line := range strings.Split(roots[0].Cmd, "\n") {
+		for _, part := range strings.Split(line, "|") {
+			f := strings.Fields(part)
+			if len(f) == 0 || strings.HasPrefix(f[0], "PATH=/usr/sbin:/usr/bin:/sbin:/bin") {
+				continue
+			}
+			if !builtins[f[0]] && !strings.HasPrefix(f[0], "/") {
+				t.Errorf("root script runs %q through PATH", f[0])
+			}
+		}
+	}
+}

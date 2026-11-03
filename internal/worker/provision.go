@@ -27,6 +27,10 @@ const (
 	cloneTimeout  = 15 * time.Minute
 	gitCmdTimeout = 2 * time.Minute
 
+	// rootPath is the PATH of the worker's root scripts: root-owned
+	// directories only.
+	rootPath = "/usr/sbin:/usr/bin:/sbin:/bin"
+
 	// provisionedPath marks a sandbox whose provisioning finished (the
 	// credential helper, every clone and setup). It holds the sandbox's
 	// ID, so a sandbox made from a snapshot of another never passes.
@@ -348,12 +352,17 @@ func (s *session) installCredentialHelper(ctx context.Context) error {
 		return fmt.Errorf("id: unexpected gid %q", gid)
 	}
 	script := base64.StdEncoding.EncodeToString([]byte(s.w.remote.CredentialHelperScript()))
+	// Root runs this, so nothing is looked up in the sandbox user's PATH
+	// (its first entry, ~/.local/bin, is agent-writable): every program
+	// is named by absolute path, under a PATH of root-owned directories.
 	root := fmt.Sprintf(`set -e
-printf %%s %s | base64 -d > %s
-chown 0:0 %s
-chmod 0755 %s
-install -d -m 0700 -o %s -g %s %s`,
-		shellQuote(script), github.CredentialHelperPath, github.CredentialHelperPath, github.CredentialHelperPath,
+PATH=%s
+export PATH
+printf %%s %s | /usr/bin/base64 -d > %s
+/usr/bin/chown 0:0 %s
+/usr/bin/chmod 0755 %s
+/usr/bin/install -d -m 0700 -o %s -g %s %s`,
+		rootPath, shellQuote(script), github.CredentialHelperPath, github.CredentialHelperPath, github.CredentialHelperPath,
 		uid, gid, gitTokenDir)
 	res, err := s.sb.Exec(ctx, sandbox.ExecRequest{Cmd: root, Dir: "/", User: "root", Timeout: time.Minute}, nil)
 	if err != nil {
