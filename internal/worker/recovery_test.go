@@ -238,3 +238,66 @@ func TestRenewalRacingReleaseIsACleanFinish(t *testing.T) {
 		t.Errorf("status = %s", st)
 	}
 }
+
+// crashAfterDeliverStore simulates a worker dying right after Delivered
+// saved the state with the answer in it: the ack loses the lease and
+// fails, once.
+type crashAfterDeliverStore struct {
+	Store
+	arm  func() bool
+	lose func()
+}
+
+func (c *crashAfterDeliverStore) MarkInputsConsumed(ctx context.Context, sessionID string, ids []string) (int64, error) {
+	if len(ids) > 0 && c.arm() {
+		c.lose()
+		return 0, context.Canceled
+	}
+	return c.Store.MarkInputsConsumed(ctx, sessionID, ids)
+}
+
+// A crash between saving an answer and setting running: the retry finds
+// the answer already delivered (it is acked as stale, and Delivered does
+// not run again), yet the session must be running while the agent works.
+func TestCrashAfterSavingAnAnswerStillSetsRunning(t *testing.T) {
+	e := newEnv(t)
+	s := e.newSession()
+	armed := false
+	e.store = &crashAfterDeliverStore{Store: e.st,
+		arm:  func() bool { a := armed; armed = false; return a },
+		lose: func() { e.leases.Lose(lease.SessionKey(s.ID)) },
+	}
+	e.llm.Push(toolCall("q1", "ask_user", map[string]any{"question": "Which?"}))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.st.Session(s.ID).Status; st != events.StatusWaitingForUser {
+		t.Fatalf("status = %s", st)
+	}
+	if _, err := e.st.AddInput(s.ID, store.InputAnswer, "dayjs", "q1", testUser); err != nil {
+		t.Fatal(err)
+	}
+	armed = true
+	if err := e.resume(s.ID); err == nil {
+		t.Fatal("expected ErrBusy after the crash")
+	}
+
+	var during events.SessionStatus
+	var openQ string
+	e.llm.PushFunc(func(req llm.Request) (*llm.Response, error) {
+		during, openQ = e.st.Session(s.ID).Status, e.st.Session(s.ID).OpenQuestionID
+		return llmtest.Text("done"), nil
+	})
+	if err := e.resume(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if during != events.StatusRunning || openQ != "" {
+		t.Errorf("while the agent ran: status %s, open question %q; want running and none", during, openQ)
+	}
+	if st := e.st.Session(s.ID).Status; st != events.StatusNoChanges {
+		t.Errorf("final status = %s", st)
+	}
+	if p, _ := e.st.ListPendingInputs(context.Background(), s.ID); len(p) != 0 {
+		t.Errorf("pending inputs = %d", len(p))
+	}
+}

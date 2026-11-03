@@ -151,8 +151,26 @@ func (s *session) inputs(ctx context.Context) ([]agent.Input, error) {
 		if _, err := s.w.d.Store.MarkInputsConsumed(ctx, s.id, stale); err != nil {
 			return nil, err
 		}
+		if len(out) == 0 && s.answering && s.state != nil && s.state.OpenQuestion() == nil {
+			// The answer is already in the state (a worker stopped
+			// between saving it and setting running), so Delivered
+			// will not run for it: set running now.
+			if err := s.toRunning(ctx); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return out, nil
+}
+
+// toRunning moves a session that was waiting for an answer back to
+// running, clearing the open question first.
+func (s *session) toRunning(ctx context.Context) error {
+	s.answering = false
+	if err := s.w.d.Store.ClearOpenQuestion(ctx, s.id); err != nil {
+		return err
+	}
+	return s.setStatus(ctx, events.StatusRunning, "")
 }
 
 // delivered is the Runner's Delivered: the inputs are in the state, so
@@ -172,11 +190,7 @@ func (s *session) delivered(ctx context.Context, ins []agent.Input) error {
 		return err
 	}
 	if s.sess.Status != events.StatusRunning {
-		s.answering = false
-		if err := s.w.d.Store.ClearOpenQuestion(ctx, s.id); err != nil {
-			return err
-		}
-		return s.setStatus(ctx, events.StatusRunning, "")
+		return s.toRunning(ctx)
 	}
 	return nil
 }
