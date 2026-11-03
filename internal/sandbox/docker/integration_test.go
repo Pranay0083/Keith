@@ -378,3 +378,40 @@ id -u; cat /usr/local/bin/git-credential-test; echo; stat -c '%U %a' /run/keith-
 		t.Fatalf("root's capabilities: %+v, %v", res, err)
 	}
 }
+
+// Regression: org secrets were passed as `docker run -e NAME` with
+// NAME=value in the docker CLI's own environment, so a secret named
+// DOCKER_HOST (or DOCKER_CONTEXT, DOCKER_CONFIG, HTTPS_PROXY) pointed the
+// worker's docker CLI somewhere else and Create failed, or worse.
+func TestDockerSecretNamesDontRedirectTheCLI(t *testing.T) {
+	p := sbtest.DockerProvider(t)
+	ctx := context.Background()
+	secrets := map[string]string{
+		"DOCKER_HOST":          "tcp://127.0.0.1:9",
+		"DOCKER_CONTEXT":       "keith-no-such-context",
+		"DOCKER_CONFIG":        "/nonexistent",
+		"DOCKER_CONTENT_TRUST": "1",
+		"HTTPS_PROXY":          "http://127.0.0.1:9",
+		"PEM":                  "-----BEGIN KEY-----\nc2VjcmV0\n-----END KEY-----",
+	}
+	sb := sbtest.Sandbox(t, p, sandbox.Spec{Env: secrets})
+	res, err := sb.Exec(ctx, sandbox.ExecRequest{
+		Cmd: `printf '%s|%s|%s|%s' "$DOCKER_HOST" "$DOCKER_CONTEXT" "$EXTRA" "$PEM"`,
+		Env: map[string]string{"EXTRA": "e", "DOCKER_HOST_EXEC": "tcp://127.0.0.1:9"},
+	}, nil)
+	if err != nil || res.ExitCode != 0 {
+		t.Fatalf("exec: %+v, %v", res, err)
+	}
+	if want := "tcp://127.0.0.1:9|keith-no-such-context|e|" + secrets["PEM"]; res.Stdout != want {
+		t.Fatalf("env in the sandbox = %q, want %q", res.Stdout, want)
+	}
+	if res, err := sb.Exec(ctx, sandbox.ExecRequest{Cmd: "true", Env: map[string]string{"DOCKER_HOST": "tcp://127.0.0.1:9"}}, nil); err != nil || res.ExitCode != 0 {
+		t.Fatalf("exec with DOCKER_HOST in its env: %+v, %v", res, err)
+	}
+	if err := sb.Pause(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := sb.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

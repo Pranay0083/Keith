@@ -3,7 +3,9 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,19 +16,22 @@ import (
 	"github.com/Pranay0083/keith/internal/sandbox/internal/sbutil"
 )
 
-func TestEnvArgsKeepValuesOutOfArgv(t *testing.T) {
-	args, vars, err := envArgs(map[string]string{"B": "secret value", "A": "x\ny"})
+func TestWriteEnvFile(t *testing.T) {
+	f, err := writeEnvFile(map[string]string{"B": "secret value", "A": " x=y "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(args, " "); got != "-e A -e B" {
-		t.Fatalf("args = %q", got)
+	defer os.Remove(f)
+	b, _ := os.ReadFile(f)
+	st, _ := os.Stat(f)
+	if string(b) != "A= x=y \nB=secret value\n" || st.Mode().Perm() != 0o600 {
+		t.Fatalf("env file = %q, mode %v", b, st.Mode())
 	}
-	if got := strings.Join(vars, "|"); got != "A=x\ny|B=secret value" {
-		t.Fatalf("vars = %q", got)
-	}
-	if _, _, err := envArgs(map[string]string{"BAD=KEY": "v"}); err == nil {
-		t.Fatal("invalid key accepted")
+	for _, env := range []map[string]string{{"BAD=KEY": "v"}, {"A": "x\ny"}, {"A": "x\r"}, {"A": "\xff"}} {
+		if f, err := writeEnvFile(env); err == nil {
+			os.Remove(f)
+			t.Errorf("%q accepted", env)
+		}
 	}
 }
 
@@ -200,6 +205,22 @@ func TestRootExecsUseSystemPath(t *testing.T) {
 	}
 }
 
+// createRequest returns the logged POST /containers/create body.
+func createRequest(t *testing.T, calls []fakeCall) createConfig {
+	t.Helper()
+	for _, c := range calls {
+		if strings.HasPrefix(c.API, "POST /containers/create?name=keith-sb-") {
+			var cfg createConfig
+			if err := json.Unmarshal([]byte(c.APIBody), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			return cfg
+		}
+	}
+	t.Fatalf("no create request in %+v", calls)
+	return createConfig{}
+}
+
 // Regression: sandboxes kept Docker's default capabilities, so anything
 // that reached root had DAC_OVERRIDE, NET_RAW, MKNOD and more. They drop
 // all of them but CHOWN and KILL.
@@ -208,9 +229,82 @@ func TestCreateDropsCapabilities(t *testing.T) {
 	if _, err := p.Create(context.Background(), sandbox.Spec{}); err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(argsWith(calls(), "--init"), " ")
-	if !strings.Contains(args, "--cap-drop ALL --cap-add CHOWN --cap-add KILL ") ||
-		!strings.Contains(args, "--security-opt no-new-privileges:true") {
-		t.Fatalf("docker run args = %s", args)
+	hc := createRequest(t, calls()).HostConfig
+	if !slices.Equal(hc.CapDrop, []string{"ALL"}) || !slices.Equal(hc.CapAdd, []string{"CHOWN", "KILL"}) ||
+		!slices.Equal(hc.SecurityOpt, []string{"no-new-privileges:true"}) || !hc.Init {
+		t.Fatalf("host config = %+v", hc)
+	}
+}
+
+// Regression: Create passed Spec.Env (the org's secrets) as `-e NAME` with
+// NAME=value in the docker CLI's own environment, so a secret named
+// DOCKER_HOST, DOCKER_CONTEXT or HTTPS_PROXY redirected the CLI itself.
+// Secrets now go to the Engine API over dial-stdio's stdin, and Exec's
+// env through a private --env-file: never the CLI's argv or environment.
+func TestSecretsStayOutOfTheCLI(t *testing.T) {
+	ctx := context.Background()
+	p, calls := fakeCLI(t, "")
+	p.opts.ExtraHosts = []string{"host.docker.internal:host-gateway"}
+	secrets := map[string]string{
+		"DOCKER_HOST":    "tcp://evil.invalid:2375",
+		"DOCKER_CONTEXT": "evil",
+		"HTTPS_PROXY":    "http://evil.invalid:3128",
+		"PEM":            "-----BEGIN KEY-----\nc2VjcmV0\n-----END KEY-----\n",
+	}
+	sbx, err := p.Create(ctx, sandbox.Spec{Env: secrets, Labels: map[string]string{"keith.session": "s1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sbx.Exec(ctx, sandbox.ExecRequest{Cmd: "true", Env: map[string]string{"DOCKER_HOST": "tcp://evil.invalid:1"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sbx.Exec(ctx, sandbox.ExecRequest{Cmd: "true", Env: map[string]string{"A": "multi\nline"}}, nil); err == nil {
+		t.Fatal("exec env with a newline: want an error")
+	}
+
+	got := calls()
+	for _, c := range got {
+		for _, kv := range c.Env {
+			k, v, _ := strings.Cut(kv, "=")
+			if _, ok := secrets[k]; ok && strings.Contains(v, "evil") {
+				t.Errorf("docker %s ran with %s in its environment", c.Args[0], kv)
+			}
+		}
+		for _, a := range c.Args {
+			if strings.Contains(a, "evil") || strings.Contains(a, "c2VjcmV0") {
+				t.Errorf("docker %s argv holds a secret: %q", c.Args[0], c.Args)
+			}
+		}
+	}
+	cfg := createRequest(t, got)
+	want := []string{"DOCKER_CONTEXT=evil", "DOCKER_HOST=tcp://evil.invalid:2375", "HTTPS_PROXY=http://evil.invalid:3128",
+		"PEM=-----BEGIN KEY-----\nc2VjcmV0\n-----END KEY-----\n"}
+	if !slices.Equal(cfg.Env, want) {
+		t.Errorf("container env = %q", cfg.Env)
+	}
+	if cfg.Labels[LabelSandbox] != "1" || cfg.Labels["keith.session"] != "s1" || cfg.User != DefaultUser ||
+		cfg.WorkingDir != sandbox.WorkspaceDir || cfg.HostConfig.PortBindings["3000/tcp"][0].HostIp != "127.0.0.1" ||
+		!slices.Equal(cfg.HostConfig.ExtraHosts, p.opts.ExtraHosts) || cfg.HostConfig.Memory != DefaultMemoryMB<<20 {
+		t.Errorf("create config = %+v", cfg)
+	}
+	if args := argsWith(got, "start"); len(args) != 2 || args[1] != sbx.ID() {
+		t.Errorf("start args = %q", args)
+	}
+	var files map[string]string
+	for _, c := range got {
+		if c.EnvFiles != nil {
+			files = c.EnvFiles
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("env files = %v", files)
+	}
+	for f, content := range files {
+		if content != "DOCKER_HOST=tcp://evil.invalid:1\n" {
+			t.Errorf("env file = %q", content)
+		}
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("env file %s left behind: %v", f, err)
+		}
 	}
 }

@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,8 +17,9 @@ import (
 )
 
 // The test binary doubles as a fake docker CLI: with KEITH_FAKE_DOCKER set
-// to a directory, it logs each invocation (argv and environment) to
-// <dir>/calls.jsonl and answers as described on fakeDocker.
+// to a directory, it logs each invocation (argv, environment, the env
+// files it was given, and any Engine API request) to <dir>/calls.jsonl
+// and answers as described on fakeDocker.
 func TestMain(m *testing.M) {
 	if dir := os.Getenv("KEITH_FAKE_DOCKER"); dir != "" {
 		os.Exit(fakeDocker(dir, os.Args[1:]))
@@ -25,12 +29,19 @@ func TestMain(m *testing.M) {
 
 // fakeCall is one logged invocation of the fake docker CLI.
 type fakeCall struct {
-	Args []string `json:"args"`
-	Env  []string `json:"env"`
+	Args     []string          `json:"args"`
+	Env      []string          `json:"env"`
+	EnvFiles map[string]string `json:"env_files,omitempty"`
+	// API and APIBody are the Engine API request sent through
+	// `system dial-stdio`.
+	API     string `json:"api,omitempty"`
+	APIBody string `json:"api_body,omitempty"`
 }
 
 // fakeDocker behaves like docker for the calls the provider makes:
 //
+//   - system dial-stdio: reads one HTTP request and answers 201 with a
+//     container ID;
 //   - exec running readScript: prints zeros forever when the mode file
 //     says "zeros" (a subverted head), else nothing;
 //   - exec running execWrapper: prints the wrapper's PID line; in mode
@@ -38,7 +49,29 @@ type fakeCall struct {
 //   - exec running the kill script: kills the hanging exec, if any;
 //   - anything else: exits 0.
 func fakeDocker(dir string, args []string) int {
-	logCall(dir, fakeCall{Args: args, Env: os.Environ()})
+	c := fakeCall{Args: args, Env: os.Environ()}
+	if len(args) >= 2 && args[0] == "system" && args[1] == "dial-stdio" {
+		req, err := http.ReadRequest(bufio.NewReader(os.Stdin))
+		if err != nil {
+			return 1
+		}
+		body, _ := io.ReadAll(req.Body)
+		c.API, c.APIBody = req.Method+" "+req.URL.String(), string(body)
+		logCall(dir, c)
+		resp := `{"Id":"0123456789ab","Warnings":[]}`
+		fmt.Printf("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: %d\r\n\r\n%s", len(resp), resp)
+		return 0
+	}
+	for i, a := range args {
+		if a == "--env-file" && i+1 < len(args) {
+			b, _ := os.ReadFile(args[i+1])
+			if c.EnvFiles == nil {
+				c.EnvFiles = map[string]string{}
+			}
+			c.EnvFiles[args[i+1]] = string(b)
+		}
+	}
+	logCall(dir, c)
 	mode, _ := os.ReadFile(filepath.Join(dir, "mode"))
 
 	isExec := len(args) > 0 && args[0] == "exec"
