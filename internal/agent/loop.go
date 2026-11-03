@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,8 +147,8 @@ type Config struct {
 	// session's question was answered (docs/api.md ordering).
 	Delivered func(ctx context.Context, inputs []Input) error
 	// Checkpoint, if set, is called whenever the State changed in a way
-	// worth saving: after each model response and after each batch of
-	// tool calls.
+	// worth saving: after each model response, after each batch of tool
+	// calls, and after answering tool calls a stopped worker left open.
 	Checkpoint func(ctx context.Context, st *State) error
 
 	// Repeat configures repeat detection.
@@ -294,6 +295,9 @@ var errEmptyResponse = errors.New("agent: model returned an empty response")
 // response's tool calls in order (tool_call.started/finished) and collect
 // their results, with any new inputs, into the next pending user turn.
 //
+// Before the first step, Run answers tool calls a stopped worker left open
+// (see answerOpenCalls), so the model sees an error result for each.
+//
 // st.Messages is only ever appended to; see State. run must not be used
 // by another Run at the same time.
 func (r *Runner) Run(ctx context.Context, run *Run, st *State) (out Outcome) {
@@ -306,6 +310,15 @@ func (r *Runner) Run(ctx context.Context, run *Run, st *State) (out Outcome) {
 		run.state = nil
 		out.Steps, out.Usage = steps, usage
 	}()
+
+	if ctx.Err() == nil {
+		if err := r.answerOpenCalls(ctx, run, st); err != nil {
+			if errors.Is(err, errEmitFailed) {
+				return failed(ReasonEmitFailed, err)
+			}
+			return checkpointFailed(ctx, err)
+		}
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -575,6 +588,70 @@ func (r *Runner) generate(ctx context.Context, run *Run, st *State) (*llm.Respon
 		}
 	}
 	return resp, nil
+}
+
+// lostResultNote is the tool_result of a tool call whose result was lost
+// because the worker stopped while it ran.
+const lostResultNote = "Interrupted: the worker stopped while this tool call was running, so its result was lost. Check the current state (files, running processes) before relying on it or running it again."
+
+// answerOpenCalls gives every tool_use of the conversation's last message
+// exactly one pending tool_result, in tool_use order.
+//
+// The loop checkpoints after a model call and again after the whole tool
+// batch. A worker that crashes or loses its lease while a tool runs
+// leaves the first checkpoint: the assistant message with its tool_use
+// blocks and no results. Without this, Run would end the turn at once,
+// and every later request would carry a tool_use with no tool_result,
+// which the providers reject.
+//
+// A result already held for a call is kept. Each missing one becomes an
+// error placeholder, announced with tool_call.finished (summary
+// "interrupted"), and the state is checkpointed. Pending texts and the
+// open question are left alone. In normal flows (a pause, a finished
+// batch, a batch interrupted under a live Run) every call already has a
+// result and nothing changes.
+func (r *Runner) answerOpenCalls(ctx context.Context, run *Run, st *State) error {
+	n := len(st.Messages)
+	if n == 0 || st.Messages[n-1].Role != llm.RoleAssistant {
+		return nil
+	}
+	uses := st.Messages[n-1].ToolUses()
+	if len(uses) == 0 {
+		return nil
+	}
+	var held []llm.Block
+	if st.Aux.Pending != nil {
+		held = st.Aux.Pending.Results
+	}
+	results := make([]llm.Block, 0, len(uses))
+	var lost []llm.Block
+	for _, u := range uses {
+		i := slices.IndexFunc(held, func(b llm.Block) bool { return b.ToolUseID == u.ID })
+		if i >= 0 {
+			results = append(results, held[i])
+			continue
+		}
+		results = append(results, llm.ToolResultBlock(u.ID, true, llm.TextBlock(lostResultNote)))
+		lost = append(lost, u)
+	}
+	same := len(held) == len(results)
+	for i := 0; same && i < len(held); i++ {
+		same = held[i].ToolUseID == results[i].ToolUseID
+	}
+	if same {
+		return nil
+	}
+	// The events go out before the state changes: if one fails, the next
+	// Run announces every placeholder again rather than none.
+	for _, u := range lost {
+		if err := run.emit(ctx, events.TypeToolCallFinished, events.ToolCallFinishedPayload{
+			CallID: u.ID, Tool: u.Name, IsError: true, Summary: "interrupted",
+		}); err != nil {
+			return err
+		}
+	}
+	st.pending().Results = results
+	return r.checkpoint(ctx, st)
 }
 
 // runTools runs the tool calls of one assistant message in order and adds

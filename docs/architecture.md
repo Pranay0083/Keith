@@ -239,6 +239,8 @@ The state is consistent after every outcome; save it, then:
 
 To resume after a pause, deliver the answer through `Inputs` with `QuestionID` set. It becomes the `ask_user` call's `tool_result`, sent with the held sibling results in one user message. A plain message answers too. Clear `open_question_id` whenever `Run` returns anything other than `paused`.
 
+A worker that stops while a tool runs (a crash, a lost lease) leaves the state of the checkpoint after the model call: tool calls with no results. The next `Run` answers each missing one before its first step, with an error result telling the model the call was interrupted and to check the current state, and emits `tool_call.finished` for it with summary `interrupted`. The model then carries on.
+
 ### Events
 
 The agent emits:
