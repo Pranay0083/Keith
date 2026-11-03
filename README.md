@@ -28,9 +28,16 @@ go build ./...
 go vet ./...
 go test ./...
 
-# Migration test against a Postgres you can create databases on
-KEITH_IT=1 DATABASE_URL=postgres://keith:keith@localhost:5432/keith?sslmode=disable go test ./migrations
+# Integration tests against the compose Postgres and Redis. These URLs are
+# the defaults when DATABASE_URL and REDIS_URL are unset.
+docker compose up -d --wait
+export DATABASE_URL='postgres://keith:keith@localhost:5432/keith?sslmode=disable'
+export REDIS_URL='redis://localhost:6379/0'
+KEITH_IT=1 go test ./...
+docker compose down -v
 ```
+
+If ports 5432 or 6379 are taken, set `KEITH_POSTGRES_PORT` and `KEITH_REDIS_PORT` for compose and put the same ports in the URLs.
 
 Configuration comes from environment variables; see `internal/config`.
 

@@ -1,0 +1,56 @@
+# Local Postgres and Redis for development and the KEITH_IT=1 integration
+# tests. The api and worker services join this file later.
+#
+#   docker compose up -d --wait
+#   export DATABASE_URL='postgres://keith:keith@localhost:5432/keith?sslmode=disable'
+#   export REDIS_URL='redis://localhost:6379/0'
+#   KEITH_IT=1 go test ./...
+#   docker compose down -v
+#
+# Those two URLs are also the defaults the integration tests use when the
+# variables are unset. If 5432 or 6379 is taken (a local Postgres, another
+# checkout), pick other host ports and put them in the URLs:
+#
+#   KEITH_POSTGRES_PORT=55432 KEITH_REDIS_PORT=56379 docker compose -p keith-dev up -d --wait
+#
+# Ports bind to 127.0.0.1 only; the credentials are for local use.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-keith}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keith}
+      POSTGRES_DB: ${POSTGRES_DB:-keith}
+    ports:
+      - "127.0.0.1:${KEITH_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: the entrypoint's temporary init server listens on the
+      # unix socket only, so this passes once the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:${KEITH_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
