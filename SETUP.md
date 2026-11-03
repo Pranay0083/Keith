@@ -199,6 +199,7 @@ Keep `SECRETS_KEY` stable and backed up. It encrypts the org and repo secrets st
 | `GITHUB_TOKEN` | `keith run --local` | (none) | A fine-grained personal access token, used instead of the App. See [`keith run --local`](#run-one-task-with-no-app-keith-run---local). |
 | `KEITH_API_URL` | `keith sessions`, `keith logs -f` (experimental) | `http://localhost:8080` | The api these client commands talk to. Experimental: the name may change. |
 | `KEITH_SESSION_COOKIE` | `keith sessions`, `keith logs -f` (experimental) | (none) | The value of your browser's `keith_session` cookie for the api. Treat it like a password. |
+| `KEITH_WEB_ORIGIN` | `keith logs` (experimental) | `http://localhost:3000` | Sent as `Origin` on the event WebSocket; must equal the api's `WEB_ORIGIN`. |
 | `KEITH_IT` | `go test` | unset | `1` runs the integration tests (Postgres, Redis, Docker). |
 | `KEITH_IT_LABEL` | `go test` | `keith.test=it` | Label (`key=value`) put on every container and image the sandbox tests create, so leftovers can be found. |
 
@@ -336,7 +337,8 @@ go run ./cmd/keith run --local --repo owner/name --issue https://github.com/owne
   - Issues: Read-only, to use `--issue` on a private repo
   - a short expiry
 - **What you see.** It streams the session's events to the terminal: messages, tool calls and shell output. When the agent asks a question, it reads your answer from stdin. At the end it prints the final diff.
-- **`--no-pr`** skips opening the pull request.
+- **`--no-pr`** is a dry run: the agent gets no `open_pr` tool and nothing is pushed.
+- **Other flags:** `--provider anthropic|gemini` and `--model` pick the model; `--install CMD` and `--test CMD` act as the repo profile (setup and the automatic test run); `--keep` keeps the (paused) sandbox for inspection instead of deleting it; `--json` prints raw events as JSON lines; `-v` shows the worker's logs. Ctrl-C stops the session gracefully, a second Ctrl-C aborts.
 - **The PAT reaches the sandbox.** It goes in through the same path as an App token: the file `/run/keith/git-token`, read by the git credential helper. The same token also reads the issue and opens the PR, so, unlike with the App, there is no separate worker-only token. Anything running in the sandbox can read it, which is why it should be fine-grained, limited to one repo and short-lived.
 - **Needs** Docker and the `keith-sandbox:latest` image. To use Gemini, set `DEFAULT_LLM_PROVIDER=gemini`, `GEMINI_API_KEY` and `DEFAULT_MODEL`.
 
