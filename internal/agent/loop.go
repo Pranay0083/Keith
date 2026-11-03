@@ -358,7 +358,7 @@ func (r *Runner) Run(ctx context.Context, run *Run, st *State) (out Outcome) {
 		steps++
 		usage.Add(resp.Usage)
 		if err := r.checkpoint(ctx, st); err != nil {
-			return failed(ReasonCheckpointFailed, err)
+			return checkpointFailed(ctx, err)
 		}
 
 		if uses := resp.Message.ToolUses(); len(uses) > 0 {
@@ -383,7 +383,7 @@ func (r *Runner) Run(ctx context.Context, run *Run, st *State) (out Outcome) {
 				return failed(ReasonToolError, err)
 			}
 			if err := r.checkpoint(ctx, st); err != nil {
-				return failed(ReasonCheckpointFailed, err)
+				return checkpointFailed(ctx, err)
 			}
 			if q := st.OpenQuestion(); q != nil {
 				return Outcome{Kind: OutcomePaused, Question: q}
@@ -408,6 +408,13 @@ const maxTokensNote = "(Your last response hit the output token limit and was cu
 
 func failed(reason string, err error) Outcome {
 	return Outcome{Kind: OutcomeFailed, Reason: reason, Err: err}
+}
+
+func checkpointFailed(ctx context.Context, err error) Outcome {
+	if ctx.Err() != nil {
+		return failed(ReasonInterrupted, err)
+	}
+	return failed(ReasonCheckpointFailed, err)
 }
 
 func isKind(err error, kind llm.ErrorKind) bool {
