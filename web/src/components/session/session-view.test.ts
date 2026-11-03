@@ -239,6 +239,7 @@ describe("Composer errors", () => {
     "repo_access_lost",
     "acme/web is no longer available to this organization, so this session cannot continue. Start a new session.",
   );
+  const capped = reject(429, "rate_limited", "This organization already has 5 active sessions. Wait for one to finish.");
 
   async function ask() {
     await send(
@@ -277,5 +278,38 @@ describe("Composer errors", () => {
     expect(buttons("Sandbox")[0]!.disabled).toBe(true);
     expect(buttons("Sandbox")[0]!.getAttribute("aria-busy")).toBeNull();
     expect(chatText()).toContain("Which key?"); // the question stays open
+  });
+
+  it("shows a rate limit on a follow-up and keeps the text for a retry", async () => {
+    await send(frame(3, "session.status", { status: "completed" }));
+    h.sendMessage = capped;
+    await type(textarea(), "Try again please");
+    await click(sendButton());
+
+    expect(alerts()).toContain("This organization already has 5 active sessions. Wait for one to finish.");
+    expect(alerts().join(" ")).not.toContain("can't continue");
+    expect(chatText()).not.toContain("Try again please");
+    expect(textarea().value).toBe("Try again please");
+    expect(textarea().disabled).toBe(false);
+    expect(sendButton().disabled).toBe(false);
+    expect(sendButton().getAttribute("aria-busy")).toBeNull();
+
+    // Once there's room, the same text goes through and shows as pending.
+    h.sendMessage = h.accept;
+    await click(sendButton());
+    expect(alerts()).toEqual([]);
+    expect(chatText()).toContain("Try again please");
+    expect(textarea().value).toBe("");
+  });
+
+  it("shows a rate limit on an answer and leaves the question open", async () => {
+    await ask();
+    h.answer = capped;
+    await click(buttons("Sandbox")[0]!);
+
+    expect(alerts()).toContain("This organization already has 5 active sessions. Wait for one to finish.");
+    expect(document.body.textContent).not.toContain("Answer sent");
+    expect(buttons("Sandbox")[0]!.disabled).toBe(false);
+    expect(buttons("Live")[0]!.disabled).toBe(false);
   });
 });
