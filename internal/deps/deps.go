@@ -8,7 +8,6 @@
 package deps
 
 import (
-	_ "github.com/anthropics/anthropic-sdk-go"
 	_ "github.com/bradleyfalzon/ghinstallation/v2"
 	_ "github.com/daytona/clients/sdk-go/pkg/daytona"
 	_ "github.com/google/go-github/v93/github"
@@ -19,5 +18,4 @@ import (
 	_ "github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/pressly/goose/v3"
 	_ "github.com/redis/go-redis/v9"
-	_ "google.golang.org/genai"
 )
