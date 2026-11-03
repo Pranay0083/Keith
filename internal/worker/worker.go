@@ -290,8 +290,11 @@ func (w *Worker) handle(ctx context.Context, sessionID string) error {
 	}
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	kaCtx, stopKeepAlive := context.WithCancel(runCtx)
+	kaDone := make(chan struct{})
 	go func() {
-		for err := range l.KeepAlive(runCtx) {
+		defer close(kaDone)
+		for err := range l.KeepAlive(kaCtx) {
 			cancel(err)
 		}
 	}()
@@ -300,22 +303,33 @@ func (w *Worker) handle(ctx context.Context, sessionID string) error {
 	err = s.run(runCtx)
 	s.park(context.WithoutCancel(ctx))
 
+	// Stop renewing before releasing: a renewal racing the release must
+	// not look like a lost lease.
+	stopKeepAlive()
+	<-kaDone
+	lost := errors.Is(context.Cause(runCtx), lease.ErrLost)
+
 	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer rcancel()
 	if rerr := l.Release(rctx); rerr != nil && !errors.Is(rerr, lease.ErrLost) {
 		s.log.Warn("release lease", "err", rerr)
 	}
 
-	if cause := context.Cause(runCtx); errors.Is(cause, lease.ErrLost) {
-		s.log.Warn("lost the session lease; another worker will continue", "err", cause)
+	if err == nil {
+		// The session settled (its status and inputs are committed)
+		// before any loss: nothing is left to retry.
+		if lost {
+			s.log.Warn("lost the session lease after the session settled")
+		}
+		return nil
+	}
+	if lost {
+		s.log.Warn("lost the session lease; another worker will continue", "err", context.Cause(runCtx))
 		return fmt.Errorf("worker: session %s: lease lost: %w", sessionID, queue.ErrBusy)
 	}
 	if errors.Is(err, errInterrupted) {
 		return fmt.Errorf("worker: session %s: %w: %w", sessionID, err, queue.ErrBusy)
 	}
-	if err != nil {
-		s.log.Error("session task failed", "err", err)
-		return fmt.Errorf("worker: session %s: %w", sessionID, err)
-	}
-	return nil
+	s.log.Error("session task failed", "err", err)
+	return fmt.Errorf("worker: session %s: %w", sessionID, err)
 }

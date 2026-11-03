@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -183,5 +184,57 @@ func TestSigtermDuringSetupStillFinishesTheCall(t *testing.T) {
 	}
 	if p := payload[events.ToolCallFinishedPayload](t, finished[0]); !p.IsError || p.Summary != "interrupted" {
 		t.Errorf("finished = %+v", p)
+	}
+}
+
+// racyLeaser's leases report a loss from KeepAlive when they are
+// released, as a renewal in flight while Release deletes the key does.
+type racyLeaser struct{ *MemLeaser }
+
+func (r racyLeaser) Acquire(ctx context.Context, key string, ttl time.Duration) (Lease, error) {
+	l, err := r.MemLeaser.Acquire(ctx, key, ttl)
+	if err != nil {
+		return nil, err
+	}
+	return &racyLease{Lease: l, renewal: make(chan error, 1)}, nil
+}
+
+type racyLease struct {
+	Lease
+	renewal chan error
+}
+
+func (l *racyLease) KeepAlive(ctx context.Context) <-chan error {
+	out := make(chan error, 1)
+	go func() {
+		defer close(out)
+		select {
+		case <-ctx.Done():
+		case err := <-l.renewal:
+			out <- err
+		}
+	}()
+	return out
+}
+
+func (l *racyLease) Release(ctx context.Context) error {
+	l.renewal <- fmt.Errorf("lease: renew: %w", lease.ErrLost)
+	time.Sleep(20 * time.Millisecond) // let a KeepAlive reader act on it
+	return l.Lease.Release(ctx)
+}
+
+// A renewal racing the lease's release must not turn a clean finish
+// into ErrBusy (a retry of a session that is done).
+func TestRenewalRacingReleaseIsACleanFinish(t *testing.T) {
+	e := newEnv(t)
+	s := e.newSession()
+	w := e.worker()
+	w.d.Leases = racyLeaser{e.leases}
+	e.llm.Push(llmtest.Text("done"))
+	if err := e.run(s.ID); err != nil {
+		t.Fatalf("clean finish returned %v", err)
+	}
+	if st := e.st.Session(s.ID).Status; st != events.StatusNoChanges {
+		t.Errorf("status = %s", st)
 	}
 }
