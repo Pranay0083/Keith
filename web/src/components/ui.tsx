@@ -157,11 +157,21 @@ const statusMeta: Record<SessionStatusName, { label: string; tone: Tone; live: b
   no_changes: { label: "No changes", tone: "neutral", live: false },
 };
 
-export function statusLabel(status: SessionStatusName): string {
-  return statusMeta[status].label;
+/**
+ * How to show a status. The API can be newer than this build, so a status
+ * it doesn't know shows as itself ("needs_review" as "Needs review").
+ */
+function statusInfo(status: string): { label: string; tone: Tone; live: boolean } {
+  if (Object.hasOwn(statusMeta, status)) return statusMeta[status as SessionStatusName];
+  const words = status.replaceAll("_", " ");
+  return { label: words.charAt(0).toUpperCase() + words.slice(1), tone: "neutral", live: false };
 }
 
-export function StatusBadge({ status, className }: { status: SessionStatusName | null; className?: string }) {
+export function statusLabel(status: SessionStatusName | string): string {
+  return statusInfo(status).label;
+}
+
+export function StatusBadge({ status, className }: { status: SessionStatusName | string | null; className?: string }) {
   if (!status) {
     return (
       <Badge className={className}>
@@ -170,7 +180,7 @@ export function StatusBadge({ status, className }: { status: SessionStatusName |
       </Badge>
     );
   }
-  const m = statusMeta[status];
+  const m = statusInfo(status);
   return (
     <Badge tone={m.tone} className={className}>
       <span className={cx("size-1.5 rounded-full bg-current", m.live && "pulse-dot")} aria-hidden />
