@@ -31,6 +31,7 @@ const (
 	ReasonProvisionFailed    = "provision_failed"
 	ReasonCloneFailed        = "clone_failed"
 	ReasonMultiInstallation  = "repos_span_installations"
+	ReasonRepoAccessLost     = "repo_access_lost"
 	ReasonSecretsUnreadable  = "secrets_unreadable"
 	ReasonLLMUnavailable     = "llm_unavailable"
 	ReasonShipFailed         = "ship_failed"

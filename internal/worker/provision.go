@@ -98,6 +98,15 @@ func (s *session) ensureEnv(ctx context.Context) error {
 	if len(s.sess.Repos) == 0 {
 		return failf(ReasonProvisionFailed, "The session has no repositories.")
 	}
+	for _, r := range s.sess.Repos {
+		// Removed from the installation, the App uninstalled, or moved to
+		// another org (whose installation would mint the token): the
+		// session must not get a sandbox or tokens for it again.
+		if r.Inaccessible || r.InstallationID == 0 {
+			return failf(ReasonRepoAccessLost,
+				"%s is no longer available to this organization, so this session cannot continue. Start a new session.", r.FullName)
+		}
+	}
 	inst := s.sess.Repos[0].InstallationID
 	var names []string
 	for _, r := range s.sess.Repos {

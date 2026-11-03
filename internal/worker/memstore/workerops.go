@@ -44,3 +44,12 @@ func (m *Store) ListStaleLiveSessions(_ context.Context, before time.Time, limit
 	}
 	return out, nil
 }
+
+// SetRepos replaces a session's repos (tests: a repo lost meanwhile).
+func (m *Store) SetRepos(id string, repos []store.SessionRepo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if x, ok := m.get(id); ok {
+		x.s.Repos = slices.Clone(repos)
+	}
+}

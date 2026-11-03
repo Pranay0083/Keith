@@ -146,3 +146,58 @@ func TestRootScriptUsesAbsolutePaths(t *testing.T) {
 		}
 	}
 }
+
+// A repo the session's org can no longer use (removed from the
+// installation, the App uninstalled, or moved to another org) must not
+// be provisioned or resumed: no sandbox, no tokens.
+func TestInaccessibleRepoIsNeverProvisionedOrResumed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		lose func(*store.SessionRepo)
+	}{
+		{"inaccessible", func(r *store.SessionRepo) { r.Inaccessible = true }},
+		{"moved to another org", func(r *store.SessionRepo) { r.Inaccessible, r.InstallationID = true, 0 }},
+		{"no installation", func(r *store.SessionRepo) { r.InstallationID = 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// New session.
+			e := newEnv(t)
+			r := webRepo()
+			tc.lose(&r)
+			s := e.newSession(withRepos(r))
+			if err := e.run(s.ID); err != nil {
+				t.Fatal(err)
+			}
+			if x := e.st.Session(s.ID); x.Status != events.StatusFailed || x.StatusReason != ReasonRepoAccessLost {
+				t.Errorf("new session: %s/%s", x.Status, x.StatusReason)
+			}
+			if len(e.sbx.Specs()) != 0 || len(e.gh.sandbox) != 0 {
+				t.Errorf("provisioned: %d sandboxes, %d token sources", len(e.sbx.Specs()), len(e.gh.sandbox))
+			}
+
+			// Resume of a parked session whose repo was lost meanwhile.
+			e2 := newEnv(t)
+			s2 := e2.newSession()
+			e2.llm.Push(llmtest.Text("one"))
+			if err := e2.run(s2.ID); err != nil {
+				t.Fatal(err)
+			}
+			repos := e2.st.Session(s2.ID).Repos
+			tc.lose(&repos[0])
+			e2.st.SetRepos(s2.ID, repos)
+			tokens := len(e2.gh.sandbox)
+			if _, err := e2.st.AddInput(s2.ID, store.InputMessage, "more", "", testUser); err != nil {
+				t.Fatal(err)
+			}
+			if err := e2.resume(s2.ID); err != nil {
+				t.Fatal(err)
+			}
+			if x := e2.st.Session(s2.ID); x.Status != events.StatusFailed || x.StatusReason != ReasonRepoAccessLost {
+				t.Errorf("resume: %s/%s", x.Status, x.StatusReason)
+			}
+			if len(e2.gh.sandbox) != tokens || len(e2.llm.Requests()) != 1 {
+				t.Errorf("resume minted tokens (%d -> %d) or ran the agent", tokens, len(e2.gh.sandbox))
+			}
+		})
+	}
+}
