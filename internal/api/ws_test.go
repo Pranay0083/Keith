@@ -312,7 +312,7 @@ func TestEventsEndpointIT(t *testing.T) {
 
 	path := "/api/sessions/" + x.ID + "/events"
 	cookie := func(userID string) http.Header {
-		v, _ := w.srv.signer.signSession(userID, time.Now().Add(time.Hour))
+		v, _ := w.srv.signer.signSession(userID, time.Now(), time.Now().Add(time.Hour))
 		return http.Header{"Cookie": {sessionCookie + "=" + v}, "Origin": {testWebOrigin}}
 	}
 

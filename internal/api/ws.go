@@ -76,9 +76,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) error {
 	if !websocket.IsWebSocketUpgrade(r) {
 		return errBadRequest("This endpoint needs a WebSocket upgrade.")
 	}
-	user := currentUser(r)
+	user, cl := currentUser(r), currentSession(r)
 	recheck := func(ctx context.Context) int {
-		if _, err := s.store.GetUser(ctx, user.ID); errors.Is(err, store.ErrNotFound) {
+		u, err := s.store.GetUser(ctx, user.ID)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && sessionRevoked(u, cl)) {
 			return closeUnauthorized
 		}
 		cur, err := s.store.GetSession(ctx, x.ID)

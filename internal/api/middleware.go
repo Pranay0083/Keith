@@ -16,7 +16,7 @@ type ctxKey int
 const (
 	ctxRequestID ctxKey = iota
 	ctxUser
-	ctxSessionExp
+	ctxSession
 )
 
 var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -163,36 +163,46 @@ func (s *Server) browserAPI(next http.Handler) http.Handler {
 // exists, and puts the user in the context.
 func (s *Server) authed(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, exp, err := s.sessionUser(r)
+		user, cl, err := s.sessionUser(r)
 		if err != nil {
 			s.writeError(w, r, err)
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxUser, user)
-		ctx = context.WithValue(ctx, ctxSessionExp, exp)
+		ctx = context.WithValue(ctx, ctxSession, cl)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // sessionUser returns the user of the request's session cookie and the
-// cookie's expiry, or errUnauthenticated.
-func (s *Server) sessionUser(r *http.Request) (store.User, time.Time, error) {
+// cookie's claims, or errUnauthenticated: for a missing, invalid or
+// expired cookie, a deleted user, or a cookie revoked by logout.
+func (s *Server) sessionUser(r *http.Request) (store.User, sessionClaims, error) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return store.User{}, time.Time{}, errUnauthenticated
+		return store.User{}, sessionClaims{}, errUnauthenticated
 	}
 	cl, err := s.signer.verifySession(c.Value, s.now())
 	if err != nil {
-		return store.User{}, time.Time{}, errUnauthenticated
+		return store.User{}, sessionClaims{}, errUnauthenticated
 	}
 	u, err := s.store.GetUser(r.Context(), cl.UserID)
 	if errors.Is(err, store.ErrNotFound) {
-		return store.User{}, time.Time{}, errUnauthenticated
+		return store.User{}, sessionClaims{}, errUnauthenticated
 	}
 	if err != nil {
-		return store.User{}, time.Time{}, err
+		return store.User{}, sessionClaims{}, err
 	}
-	return u, time.Unix(cl.Exp, 0), nil
+	if sessionRevoked(u, cl) {
+		return store.User{}, sessionClaims{}, errUnauthenticated
+	}
+	return u, cl, nil
+}
+
+// sessionRevoked reports whether a logout revoked the cookie: it was
+// issued at or before the user's sessions_valid_after.
+func sessionRevoked(u store.User, cl sessionClaims) bool {
+	return !u.SessionsValidAfter.IsZero() && !cl.IssuedAt().After(u.SessionsValidAfter)
 }
 
 // currentUser returns the signed-in user; only valid behind authed.
@@ -201,7 +211,16 @@ func currentUser(r *http.Request) store.User {
 	return u
 }
 
+// currentSession returns the session cookie's claims; only valid behind
+// authed.
+func currentSession(r *http.Request) sessionClaims {
+	cl, _ := r.Context().Value(ctxSession).(sessionClaims)
+	return cl
+}
+
 func sessionExpiry(r *http.Request) time.Time {
-	t, _ := r.Context().Value(ctxSessionExp).(time.Time)
-	return t
+	if cl := currentSession(r); cl.Exp != 0 {
+		return time.Unix(cl.Exp, 0)
+	}
+	return time.Time{}
 }

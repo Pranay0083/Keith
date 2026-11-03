@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,9 +11,11 @@ import (
 	"github.com/Pranay0083/keith/internal/store"
 )
 
-// Sessions are stateless: keith_session is a signed (user ID, expiry)
-// pair. Logout clears the cookie in the browser but cannot revoke a copy
-// of it; that needs a server-side session table (not in V1).
+// Sessions are stateless: keith_session is a signed (user ID, issue
+// time, expiry) triple. Logout revokes it, and every other cookie issued
+// to the user until then, by moving users.sessions_valid_after forward;
+// sessionUser and the WebSocket recheck refuse a cookie issued at or
+// before that time.
 
 // setCookie sets an HttpOnly, SameSite=Lax, host-only cookie. maxAge < 0
 // deletes it (Max-Age=0).
@@ -135,7 +138,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Session cookie, then back to the web app.
-	val, err := s.signer.signSession(user.ID, s.now().Add(sessionTTL))
+	now := s.now()
+	val, err := s.signer.signSession(user.ID, now, now.Add(sessionTTL))
 	if err != nil {
 		s.loginFailed(w, r, "oauth_failed", err)
 		return
@@ -148,9 +152,21 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.webURLFor(next), http.StatusFound)
 }
 
-// handleLogout clears the session cookie (POST /auth/logout). It answers
-// 204 with or without a valid cookie.
-func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) error {
+// handleLogout is POST /auth/logout. A valid cookie revokes every
+// session cookie issued to its user so far, so a copy of it stops
+// working too; then the cookie is cleared. It answers 204 with or
+// without a valid cookie. If the revocation cannot be saved it answers
+// 500 and keeps the cookie, so the client can retry.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) error {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		now := s.now()
+		if cl, err := s.signer.verifySession(c.Value, now); err == nil {
+			err := s.store.RevokeUserSessions(r.Context(), cl.UserID, now)
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
+				return err
+			}
+		}
+	}
 	s.setCookie(w, sessionCookie, "", "/", -1)
 	w.WriteHeader(http.StatusNoContent)
 	return nil

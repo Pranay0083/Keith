@@ -215,7 +215,7 @@ type reqOpt func(*http.Request)
 // as signs the request in as userID.
 func (h *harness) as(userID string) reqOpt {
 	return func(r *http.Request) {
-		v, err := h.srv.signer.signSession(userID, time.Now().Add(time.Hour))
+		v, err := h.srv.signer.signSession(userID, time.Now(), time.Now().Add(time.Hour))
 		if err != nil {
 			h.t.Fatal(err)
 		}

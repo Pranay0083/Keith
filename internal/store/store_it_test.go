@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/Pranay0083/keith/internal/secrets"
 	"github.com/Pranay0083/keith/internal/store"
 	"github.com/Pranay0083/keith/internal/store/storetest"
+	"github.com/Pranay0083/keith/migrations"
 )
 
 // Integration tests: KEITH_IT=1, against DATABASE_URL (see storetest).
@@ -76,8 +80,8 @@ func TestMigrateFromEmpty(t *testing.T) {
 
 	var version int64
 	ok(t, s.Pool().QueryRow(ctx, `SELECT max(version_id) FROM goose_db_version WHERE is_applied`).Scan(&version))
-	if version != 3 {
-		t.Errorf("goose version = %d, want 3", version)
+	if want := latestMigration(t); version != want {
+		t.Errorf("goose version = %d, want %d", version, want)
 	}
 	var hasReason bool
 	ok(t, s.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -85,6 +89,22 @@ func TestMigrateFromEmpty(t *testing.T) {
 	if !hasReason {
 		t.Error("sessions.status_reason missing after migrate")
 	}
+}
+
+// latestMigration is the highest version among the embedded migration
+// files (NNNNN_name.sql).
+func latestMigration(t *testing.T) int64 {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "*.sql")
+	ok(t, err)
+	var latest int64
+	for _, n := range names {
+		prefix, _, _ := strings.Cut(n, "_")
+		v, err := strconv.ParseInt(prefix, 10, 64)
+		ok(t, err)
+		latest = max(latest, v)
+	}
+	return latest
 }
 
 func TestOpenRejectsBadURL(t *testing.T) {

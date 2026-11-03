@@ -96,11 +96,19 @@ func (s *signer) verify(purpose, token string, now time.Time, v any, expOf func(
 	return nil
 }
 
-// sessionClaims is the session cookie: who is signed in, until when.
+// sessionClaims is the session cookie: who is signed in, since when and
+// until when.
 type sessionClaims struct {
 	claims
 	UserID string `json:"uid"`
+	// IssuedAtMs is when the cookie was issued, in Unix milliseconds, so
+	// logout can revoke it (users.sessions_valid_after). Cookies from
+	// before it existed have 0.
+	IssuedAtMs int64 `json:"iat_ms,omitempty"`
 }
+
+// IssuedAt returns the cookie's issue time.
+func (c sessionClaims) IssuedAt() time.Time { return time.UnixMilli(c.IssuedAtMs) }
 
 // oauthStateClaims is the keith_oauth_state cookie.
 type oauthStateClaims struct {
@@ -117,8 +125,8 @@ type setupStateClaims struct {
 	Nonce  string `json:"n"`
 }
 
-func (s *signer) signSession(userID string, exp time.Time) (string, error) {
-	return s.sign(purposeSession, sessionClaims{claims{exp.Unix()}, userID})
+func (s *signer) signSession(userID string, iat, exp time.Time) (string, error) {
+	return s.sign(purposeSession, sessionClaims{claims: claims{exp.Unix()}, UserID: userID, IssuedAtMs: iat.UnixMilli()})
 }
 
 func (s *signer) verifySession(token string, now time.Time) (sessionClaims, error) {

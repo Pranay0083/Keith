@@ -26,7 +26,7 @@ Every non-2xx response from `/api/*` and `/auth/logout` has this body:
 | Status | `code` | When |
 |---|---|---|
 | 400 | `bad_request` | Malformed JSON, a malformed path or query parameter |
-| 401 | `unauthenticated` | No valid `keith_session` cookie |
+| 401 | `unauthenticated` | No valid `keith_session` cookie: missing, expired, revoked by logout, or for a deleted user |
 | 403 | `not_a_member` | The user is not a member of the org that owns the resource |
 | 403 | `forbidden_role` | The user's role in the org is too low for this action (see each endpoint) |
 | 403 | `bad_origin` | A state-changing request without `Origin == WEB_ORIGIN` |
@@ -47,7 +47,7 @@ A resource in an org the user does not belong to returns `404` for session, repo
 
 ## Authentication and CSRF
 
-- **Session cookie.** `keith_session` is set by the OAuth callback with `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000` (30 days) and no `Domain` attribute. Its value is opaque to the web app and is signed with `SESSION_SECRET`. When `PUBLIC_URL` is `http://localhost…` the API may omit `Secure` for local development.
+- **Session cookie.** `keith_session` is set by the OAuth callback with `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000` (30 days) and no `Domain` attribute. Its value is opaque to the web app and is signed with `SESSION_SECRET`. It carries the time it was issued, so logout can revoke it (see `POST /auth/logout`). When `PUBLIC_URL` is `http://localhost…` the API may omit `Secure` for local development.
 - **Every `/api/*` route** requires the cookie and returns `401 unauthenticated` without it. The web app sends `credentials: "include"` on every request.
 - **CSRF.** Every `POST`, `PUT`, `PATCH` and `DELETE` to `/api/*` and `/auth/logout` must carry an `Origin` header equal to `WEB_ORIGIN`, or the API answers `403 bad_origin` before doing anything else. `/hooks/github` is exempt (it is authenticated by HMAC). The WebSocket upgrade checks `Origin` too (see Events).
 - **CORS.** For requests whose `Origin` is `WEB_ORIGIN`, the API sends `Access-Control-Allow-Origin: <WEB_ORIGIN>`, `Access-Control-Allow-Credentials: true` and `Vary: Origin`. A preflight `OPTIONS` answers `204` with `Access-Control-Allow-Methods: GET, POST, PUT, DELETE`, `Access-Control-Allow-Headers: Content-Type` and `Access-Control-Max-Age: 600`. Other origins get no CORS headers.
@@ -77,7 +77,10 @@ On failure the API responds `302` to `WEB_ORIGIN/login?error=<code>`, where `cod
 
 ### `POST /auth/logout`
 
-No body. Requires `Origin`. Invalidates the session, clears `keith_session` (`Max-Age=0`) and returns `204`. Returns `204` even without a valid cookie.
+No body. Requires `Origin`. Revokes the session server-side, clears `keith_session` (`Max-Age=0`) and returns `204`. Returns `204` even without a valid cookie.
+
+- Revocation records the time on the user (`users.sessions_valid_after`). Every cookie issued to that user at or before it is refused from then on, on every device: `/api/*` answers `401`, `GET /github/setup` redirects to login, and an open event stream closes with `4401` at its next access check (within 30 seconds).
+- If the revocation cannot be saved, the API answers `500 internal` and keeps the cookie, so the client can retry.
 
 ### `GET /api/me`
 

@@ -22,12 +22,12 @@ import (
 func TestSignedTokens(t *testing.T) {
 	s := newSigner([]byte(testSecret))
 	now := time.Now()
-	tok, err := s.signSession("user-1", now.Add(time.Hour))
+	tok, err := s.signSession("user-1", now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c, err := s.verifySession(tok, now)
-	if err != nil || c.UserID != "user-1" {
+	if err != nil || c.UserID != "user-1" || !c.IssuedAt().Equal(now.Truncate(time.Millisecond)) {
 		t.Fatalf("verify: %+v %v", c, err)
 	}
 
@@ -37,7 +37,7 @@ func TestSignedTokens(t *testing.T) {
 	}
 	// Tampered body or signature.
 	body, sig, _ := strings.Cut(tok, ".")
-	forged, _ := s.sign(purposeSession, sessionClaims{claims{now.Add(time.Hour).Unix()}, "user-2"})
+	forged, _ := s.sign(purposeSession, sessionClaims{claims: claims{now.Add(time.Hour).Unix()}, UserID: "user-2"})
 	fbody, _, _ := strings.Cut(forged, ".")
 	for _, bad := range []string{fbody + "." + sig, body + "." + sig[:len(sig)-2] + "AA", body, "", ".", body + ".", "a.b.c"} {
 		if _, err := s.verifySession(bad, now); err == nil {
@@ -125,10 +125,10 @@ func TestCORS(t *testing.T) {
 func TestCookieAuth(t *testing.T) {
 	h := newHarness(t, nil)
 	now := time.Now()
-	valid, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000001", now.Add(time.Hour))
-	expired, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000001", now.Add(-time.Second))
+	valid, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000001", now, now.Add(time.Hour))
+	expired, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000001", now.Add(-time.Hour), now.Add(-time.Second))
 	body, sig, _ := strings.Cut(valid, ".")
-	other, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000002", now.Add(time.Hour))
+	other, _ := h.srv.signer.signSession("00000000-0000-4000-8000-000000000002", now, now.Add(time.Hour))
 	otherBody, _, _ := strings.Cut(other, ".")
 	setup, _ := h.srv.signer.signSetupState("o", "00000000-0000-4000-8000-000000000001", now.Add(time.Hour))
 	for name, v := range map[string]string{
@@ -413,6 +413,66 @@ func TestCallbackSignsInIT(t *testing.T) {
 	w.do("GET", "/auth/github/callback?code=c2&state="+state, nil, withCookie(oauthStateCookie, cookie))
 	if orgs, _ := w.st.ListOrgsForUser(ctx, u.ID); len(orgs) != 1 {
 		t.Fatalf("orgs after second sign-in: %d", len(orgs))
+	}
+}
+
+// Logout revokes the cookie server-side, along with every other cookie
+// issued to the user until then: a copied cookie stops working, on the
+// API, the setup URL and an open event stream.
+func TestLogoutRevokesIT(t *testing.T) {
+	w := newWorld(t)
+	ts := httptest.NewServer(w.h)
+	t.Cleanup(ts.Close)
+	w.srv.wsRecheckEvery = 50 * time.Millisecond
+	issued := time.Now().Add(-time.Minute)
+	sign := func(userID string) string {
+		v, err := w.srv.signer.signSession(userID, issued, issued.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	this, copied, other := sign(w.member.ID), sign(w.member.ID), sign(w.owner.ID)
+	// A cookie from before cookies carried an issue time.
+	legacy, err := w.srv.signer.sign(purposeSession, sessionClaims{claims: claims{issued.Add(time.Hour).Unix()}, UserID: w.member.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	me := func(v string) int { return w.do("GET", "/api/me", nil, withCookie(sessionCookie, v)).Code }
+	for _, v := range []string{this, copied, other, legacy} {
+		if code := me(v); code != 200 {
+			t.Fatalf("before logout: %d", code)
+		}
+	}
+	x := w.create(t, map[string]any{"prompt": "p", "repo_ids": []string{w.repo.ID}})
+	stream := dialWS(t, wsURL(ts.URL, "/api/sessions/"+x.ID+"/events"),
+		http.Header{"Cookie": {sessionCookie + "=" + copied}, "Origin": {testWebOrigin}})
+
+	resp := w.do("POST", "/auth/logout", nil, withCookie(sessionCookie, this))
+	if resp.Code != http.StatusNoContent || !strings.Contains(resp.Header().Get("Set-Cookie"), "Max-Age=0") {
+		t.Fatalf("logout %d %q", resp.Code, resp.Header().Get("Set-Cookie"))
+	}
+	for name, v := range map[string]string{"logged-out cookie": this, "copy on another device": copied, "legacy cookie": legacy} {
+		wantError(t, w.do("GET", "/api/me", nil, withCookie(sessionCookie, v)), 401, codeUnauthenticated)
+		if code := w.do("GET", "/api/sessions/"+x.ID, nil, withCookie(sessionCookie, v)).Code; code != 401 {
+			t.Errorf("%s: GET session %d", name, code)
+		}
+	}
+	wantRedirect(t, w.do("GET", "/github/setup?installation_id=1&code=c&state=s", nil, withCookie(sessionCookie, this)),
+		testWebOrigin+"/login?next=%2Fconnect")
+	wantClose(t, stream, closeUnauthorized)
+	// Other users are untouched, and signing in again works.
+	if code := me(other); code != 200 {
+		t.Errorf("another user's cookie after logout: %d", code)
+	}
+	if code := w.do("GET", "/api/me", nil, w.as(w.member.ID)).Code; code != 200 {
+		t.Errorf("a cookie issued after logout: %d", code)
+	}
+	// Logging out with a revoked cookie, or a deleted user's, is still 204.
+	for _, v := range []string{this, sign("00000000-0000-4000-8000-00000000dead")} {
+		if code := w.do("POST", "/auth/logout", nil, withCookie(sessionCookie, v)).Code; code != 204 {
+			t.Errorf("logout again: %d", code)
+		}
 	}
 }
 

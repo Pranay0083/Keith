@@ -14,8 +14,12 @@ type User struct {
 	Email     string
 	Name      string
 	AvatarURL string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// SessionsValidAfter is the logout cutoff: session cookies issued at
+	// or before it are revoked (see RevokeUserSessions). Zero means none
+	// is.
+	SessionsValidAfter time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // UpsertUserParams is the GitHub profile seen at sign-in.
@@ -27,13 +31,17 @@ type UpsertUserParams struct {
 	AvatarURL    string
 }
 
-const userCols = `id, github_user_id, github_login, email, name, avatar_url, created_at, updated_at`
+const userCols = `id, github_user_id, github_login, email, name, avatar_url, sessions_valid_after, created_at, updated_at`
 
 func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var u User
 	var email *string
-	err := row.Scan(&u.ID, &u.GitHubUserID, &u.GitHubLogin, &email, &u.Name, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
+	var validAfter *time.Time
+	err := row.Scan(&u.ID, &u.GitHubUserID, &u.GitHubLogin, &email, &u.Name, &u.AvatarURL, &validAfter, &u.CreatedAt, &u.UpdatedAt)
 	u.Email = deref(email)
+	if validAfter != nil {
+		u.SessionsValidAfter = *validAfter
+	}
 	return u, err
 }
 
