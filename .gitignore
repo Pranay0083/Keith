@@ -7,3 +7,8 @@ __pycache__
 # Runtime files
 *.log
 *.pid
+# Local configuration and keys (SETUP.md); never commit them.
+.env
+.env.*
+!.env.example
+*.pem

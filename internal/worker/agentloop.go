@@ -365,10 +365,8 @@ func (s *session) ship(ctx context.Context, finalText string) error {
 		if err != nil {
 			return s.interruptedOr(ctx, err)
 		}
-		pr, hasPR := s.state.Aux.PRs[r.FullName]
-		if !hasPR && r.PRNumber > 0 {
-			pr, hasPR = agent.PR{Repo: r.FullName, Number: r.PRNumber, URL: r.PRURL}, true
-		}
+		_, hasPR := s.state.Aux.PRs[r.FullName]
+		hasPR = hasPR || r.PRNumber > 0
 		if !ch.any() && !hasPR {
 			continue
 		}
@@ -383,7 +381,6 @@ func (s *session) ship(ctx context.Context, finalText string) error {
 			}
 			return s.interruptedOr(ctx, err)
 		}
-		_ = pr
 	}
 	if !anything {
 		return s.setStatus(ctx, events.StatusNoChanges, ReasonNoChanges)
