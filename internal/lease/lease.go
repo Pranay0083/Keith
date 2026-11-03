@@ -5,7 +5,9 @@
 // Acquire is SET NX PX with a random token. Renew and Release are
 // check-and-set Lua scripts that act only while the key still holds that
 // token, so a holder whose lease expired can never extend or delete its
-// successor's. KeepAlive renews in the background and reports a loss.
+// successor's. KeepAlive renews in the background and reports a loss. Once
+// Release has begun it decides how the lease ends, so a renewal that finds
+// the key already deleted by Release is not reported as a loss.
 //
 // A lease can be lost without the holder noticing in time: a long GC
 // pause or a network partition can outlast the TTL. Each acquisition
@@ -117,8 +119,12 @@ type Lease struct {
 
 	mu       sync.Mutex
 	deadline time.Time
-	err      error // why the lease ended: ErrLost (wrapped) or errReleased
-	done     chan struct{}
+	// releasing counts Release calls that have begun and not failed. Once
+	// it is positive, Release decides how the lease ends: a renewal or
+	// check that finds the key gone may be seeing Release's own delete.
+	releasing int
+	err       error // why the lease ended: ErrLost (wrapped) or errReleased
+	done      chan struct{}
 }
 
 var errReleased = errors.New("lease: released")
@@ -174,9 +180,28 @@ func (l *Lease) end(err error) {
 	}
 }
 
+// lose ends the lease as lost with err (which wraps ErrLost) and returns
+// err. If Release has begun, it leaves the lease to Release and returns
+// errReleased; if the lease has already ended, it returns why.
+func (l *Lease) lose(err error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case l.releasing > 0:
+		return errReleased
+	case l.err != nil:
+		return l.err
+	}
+	l.err = err
+	close(l.done)
+	return err
+}
+
 // Renew resets the lease's TTL. It returns an error wrapping ErrLost if the
 // key no longer holds this lease's token, after which the lease is dead.
-// Other errors (Redis unreachable) leave the lease as it was.
+// A renewal that races Release is not a loss: once Release has begun, a
+// missing key returns the released error and the lease is left to
+// Release. Other errors (Redis unreachable) leave the lease as it was.
 func (l *Lease) Renew(ctx context.Context) error {
 	if err := l.Err(); err != nil {
 		return err
@@ -187,9 +212,7 @@ func (l *Lease) Renew(ctx context.Context) error {
 		return fmt.Errorf("lease: renew %s: %w", l.key, err)
 	}
 	if n == 0 {
-		err := fmt.Errorf("lease: renew %s: %w", l.key, ErrLost)
-		l.end(err)
-		return err
+		return l.lose(fmt.Errorf("lease: renew %s: %w", l.key, ErrLost))
 	}
 	l.mu.Lock()
 	l.deadline = start.Add(l.ttl)
@@ -198,7 +221,7 @@ func (l *Lease) Renew(ctx context.Context) error {
 }
 
 // Check asks Redis whether the key still holds this lease's token. A no
-// marks the lease lost.
+// marks the lease lost, unless Release has begun.
 func (l *Lease) Check(ctx context.Context) (bool, error) {
 	if l.Err() != nil {
 		return false, nil
@@ -211,7 +234,7 @@ func (l *Lease) Check(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("lease: check %s: %w", l.key, err)
 	}
 	if v != l.token {
-		l.end(fmt.Errorf("lease: check %s: %w", l.key, ErrLost))
+		_ = l.lose(fmt.Errorf("lease: check %s: %w", l.key, ErrLost))
 		return false, nil
 	}
 	return true, nil
@@ -219,7 +242,8 @@ func (l *Lease) Check(ctx context.Context) (bool, error) {
 
 // Release gives the lease up and stops KeepAlive. It returns an error
 // wrapping ErrLost if the lease had already been lost; a successor's
-// lease is never touched. Releasing twice is a no-op.
+// lease is never touched. Releasing twice is a no-op. A failed Release
+// (Redis unreachable) leaves the lease as it was.
 func (l *Lease) Release(ctx context.Context) error {
 	if err := l.Err(); err != nil {
 		if errors.Is(err, errReleased) {
@@ -227,8 +251,14 @@ func (l *Lease) Release(ctx context.Context) error {
 		}
 		return err
 	}
+	l.mu.Lock()
+	l.releasing++
+	l.mu.Unlock()
 	n, err := releaseScript.Run(ctx, l.rdb, []string{lockKey(l.key)}, l.token).Int64()
 	if err != nil {
+		l.mu.Lock()
+		l.releasing--
+		l.mu.Unlock()
 		return fmt.Errorf("lease: release %s: %w", l.key, err)
 	}
 	l.end(errReleased)
@@ -241,7 +271,8 @@ func (l *Lease) Release(ctx context.Context) error {
 // KeepAlive renews the lease every TTL/3 until ctx ends or the lease is
 // released or lost. If the lease is lost, it sends one error wrapping
 // ErrLost on the returned channel; the channel is closed when KeepAlive
-// stops, for whatever reason.
+// stops, for whatever reason. A Release, even one racing a renewal, stops
+// it without an error.
 //
 // Transient renewal failures are retried until the lease's Deadline
 // passes; then the lease counts as lost even if Redis comes back, since
@@ -271,9 +302,10 @@ func (l *Lease) KeepAlive(ctx context.Context) <-chan error {
 
 			deadline := l.Deadline()
 			if !time.Now().Before(deadline) {
-				err := fmt.Errorf("lease: %s expired before it could be renewed: %w", l.key, ErrLost)
-				l.end(err)
-				out <- err
+				err := l.lose(fmt.Errorf("lease: %s expired before it could be renewed: %w", l.key, ErrLost))
+				if errors.Is(err, ErrLost) {
+					out <- err
+				}
 				return
 			}
 			rctx, cancel := context.WithDeadline(ctx, deadline)
@@ -285,6 +317,8 @@ func (l *Lease) KeepAlive(ctx context.Context) <-chan error {
 			case errors.Is(err, ErrLost):
 				out <- err
 				return
+			case errors.Is(err, errReleased):
+				return // Release raced this renewal; not a loss
 			case ctx.Err() != nil:
 				return
 			default:
