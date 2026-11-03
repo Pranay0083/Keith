@@ -58,5 +58,6 @@ func DefaultTools(opts ToolOptions) []Tool {
 		readIssueTool{},
 		messageUserTool{newID: o.NewID},
 		askUserTool{},
+		openPRTool{},
 	}
 }

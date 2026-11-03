@@ -63,6 +63,9 @@ type Aux struct {
 	Usage llm.Usage `json:"usage"`
 	// Steps counts every model call of the session.
 	Steps int `json:"steps"`
+	// PRs maps a repo's full name to the pull request open_pr opened for
+	// it this session, so pr.opened is emitted once per repo.
+	PRs map[string]PR `json:"prs,omitempty"`
 	// Delivered lists the IDs of the most recent user inputs handed to
 	// the model, so an input delivered twice (a worker crash between
 	// polling and acking) is sent only once.
