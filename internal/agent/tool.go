@@ -89,6 +89,10 @@ type Run struct {
 	// open_pr only pushes new commits to the same PR. A non-nil error
 	// stops the run.
 	OnPROpened func(ctx context.Context, repo RepoContext, pr PR) error
+	// Redact removes secrets from text the agent sends outside the
+	// session's event log: the pull request title and body and the commit
+	// message open_pr writes. nil leaves text unchanged.
+	Redact func(string) string
 
 	// mu guards shellCalls, which CurrentCall reads from the shell
 	// manager's output goroutine.
@@ -115,6 +119,14 @@ func (r *Run) CurrentCall(shell string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.shellCalls[shell]
+}
+
+// redact applies Redact to s; it is a no-op when Redact is nil.
+func (r *Run) redact(s string) string {
+	if r == nil || r.Redact == nil {
+		return s
+	}
+	return r.Redact(s)
 }
 
 // bindShell records callID as the call reading shell until the returned

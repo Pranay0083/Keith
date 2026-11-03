@@ -98,10 +98,14 @@ func (openPRTool) Execute(ctx context.Context, run *Run, input json.RawMessage) 
 	if bad != nil {
 		return *bad, nil
 	}
-	title := oneLine(in.Title, maxPRTitle)
+	// The title and body leave the session (commit message, GitHub), so
+	// secrets are redacted first. The title is redacted before it is
+	// shortened, so a cut cannot hide part of a secret from Redact.
+	title := oneLine(run.redact(in.Title), maxPRTitle)
 	if title == "" {
 		return errorResult("title is empty."), nil
 	}
+	body := run.redact(in.Body)
 	if err := ValidateAgentBranch(rc.Branch); err != nil {
 		return errorResult(fmt.Sprintf("Refusing to push %s: %v. Only agent/* branches may be pushed.", rc.FullName, err)), nil
 	}
@@ -162,8 +166,8 @@ func (openPRTool) Execute(ctx context.Context, run *Run, input json.RawMessage) 
 		}
 		cmd := fmt.Sprintf("git -c user.name=%s -c user.email=%s commit -q -m %s",
 			shellQuote(author.Name), shellQuote(author.Email), shellQuote(title))
-		if body := strings.TrimSpace(in.Body); body != "" {
-			cmd += " -m " + shellQuote(body)
+		if msg := strings.TrimSpace(body); msg != "" {
+			cmd += " -m " + shellQuote(msg)
 		}
 		if res, err := git(cmd, gitTimeout); err != nil || res.ExitCode != 0 {
 			return failed("git commit", res, err)
@@ -181,7 +185,7 @@ func (openPRTool) Execute(ctx context.Context, run *Run, input json.RawMessage) 
 	}
 	pr, err := run.Host.OpenPR(ctx, PRRequest{
 		Repo: rc.FullName, Head: rc.Branch, Base: rc.DefaultBranch,
-		Title: title, Body: in.Body, Draft: in.Draft,
+		Title: title, Body: body, Draft: in.Draft,
 	})
 	if err != nil {
 		if ctx.Err() != nil {

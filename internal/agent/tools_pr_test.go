@@ -180,3 +180,40 @@ func TestOpenPRFailures(t *testing.T) {
 	h.run.Host = nil
 	wantErrorResult(t, h.tool("p7", "open_pr", prInput), "not available")
 }
+
+// TestOpenPRRedactsTitleBodyAndCommit: a secret the model copied into the
+// title or body reaches neither the commit nor GitHub.
+func TestOpenPRRedactsTitleBodyAndCommit(t *testing.T) {
+	const secret = "sk_live_51HxQ2eZvKYlo2C0aBcD"
+	h := newToolHarness(t)
+	h.run.Redact = func(s string) string { return strings.ReplaceAll(s, secret, "[REDACTED]") }
+	h.sb.SetHandler(gitRepo{head: "agent/s1", status: " M main.go\n", ahead: "0"}.handler())
+	r := h.tool("p1", "open_pr", map[string]any{
+		"title": "Rotate the key " + secret,
+		"body":  "The old key " + secret + " was in config.go.",
+	})
+	if r.IsError || !strings.Contains(text(r), "#100") {
+		t.Fatalf("result = %q", text(r))
+	}
+
+	var commit string
+	for _, c := range h.gitCmds() {
+		if strings.Contains(c, secret) {
+			t.Errorf("git command carries the secret: %q", c)
+		}
+		if strings.Contains(c, " commit ") {
+			commit = c
+		}
+	}
+	if !strings.Contains(commit, "-m 'Rotate the key [REDACTED]' -m 'The old key [REDACTED] was in config.go.'") {
+		t.Errorf("commit = %q", commit)
+	}
+	reqs := h.host.PRRequests()
+	if len(reqs) != 1 || reqs[0].Title != "Rotate the key [REDACTED]" || reqs[0].Body != "The old key [REDACTED] was in config.go." {
+		t.Fatalf("PR request = %+v", reqs)
+	}
+	po := agenttest.Payloads[events.PROpenedPayload](h.events, events.TypePROpened)
+	if len(po) != 1 || po[0].Title != "Rotate the key [REDACTED]" {
+		t.Fatalf("pr.opened = %+v", po)
+	}
+}

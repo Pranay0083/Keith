@@ -201,6 +201,7 @@ run := &agent.Run{
 	GitAuthor: botIdentity,
 	AfterFileChange: saveDiff, // runs before file.changed
 	OnPROpened: recordPR,      // runs before pr.opened; once per repo
+	Redact: redactSecrets,     // open_pr's PR title, body and commit message
 }
 run.Shells = tmuxshell.New(sb, tmuxshell.WithOutput(func(shell string, chunk []byte) {
 	emit(events.TypeToolCallOutput, events.ToolCallOutputPayload{
