@@ -366,11 +366,9 @@ func (e *tenv) handle(req sandbox.ExecRequest) (*sandbox.ExecResult, error) {
 		e.dirty, e.ahead, e.pushed = false, e.ahead+1, e.pushed+1
 		e.mu.Unlock()
 		return ok("")
-	case strings.HasPrefix(c, "git push"):
-		e.mu.Lock()
-		e.pushed = 0
-		e.mu.Unlock()
-		return ok("")
+	case strings.Contains(c, "git push"):
+		// The sandbox's credentials are read-only.
+		return &sandbox.ExecResult{ExitCode: 128, Stderr: "remote: Permission denied (read-only token)"}, nil
 	case strings.Contains(c, "git bundle create"):
 		// The worker's push script: the remote has the fake commits
 		// already, so no bundle is needed. The sandbox's tracking ref

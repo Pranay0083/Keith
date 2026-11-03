@@ -13,10 +13,10 @@ import (
 	"github.com/Pranay0083/keith/internal/sandbox/memsandbox"
 )
 
-// gitRepo scripts the git commands open_pr runs.
+// gitRepo scripts the git commands open_pr runs. A git push in the
+// sandbox fails, as it does with the sandbox's read-only credentials.
 type gitRepo struct {
 	head, status, ahead string
-	pushExit            int
 	commitExit          int
 }
 
@@ -27,15 +27,20 @@ func (g gitRepo) handler() memsandbox.Handler {
 		memsandbox.On(memsandbox.Prefix("git rev-list --count"), memsandbox.OK(g.ahead+"\n")),
 		memsandbox.On(memsandbox.Prefix("git add -A"), memsandbox.OK("")),
 		memsandbox.On(memsandbox.Contains(" commit "), memsandbox.Exit(g.commitExit, "", "hook failed: lint")),
-		memsandbox.On(memsandbox.Prefix("git push"), memsandbox.Exit(g.pushExit, "", "! [rejected] non-fast-forward")),
+		memsandbox.On(memsandbox.Contains("push"), memsandbox.Exit(128, "", "remote: Permission denied (read-only token)")),
 	)
 }
 
+// gitCmds returns the commands open_pr ran in the sandbox. None may
+// push: open_pr pushes through Run.Push, from the worker.
 func (h *harness) gitCmds() []string {
 	var out []string
 	for _, r := range h.sb.ExecRequests() {
 		if r.Dir != "/workspace/api" {
 			h.t.Errorf("git ran in %q", r.Dir)
+		}
+		if strings.Contains(r.Cmd, "push") {
+			h.t.Errorf("open_pr pushed in the sandbox: %q", r.Cmd)
 		}
 		if r.Env["GIT_TERMINAL_PROMPT"] != "0" {
 			h.t.Errorf("git may prompt: %+v", r.Env)
@@ -73,10 +78,9 @@ func TestOpenPRBranchValidation(t *testing.T) {
 		h.run.Repos[0].Branch = bad
 		wantErrorResult(t, h.tool("p-"+bad, "open_pr", prInput), "Only agent/* branches may be pushed")
 	}
-	for _, c := range h.gitCmds() {
-		if strings.HasPrefix(c, "git push") {
-			t.Fatalf("pushed: %q", c)
-		}
+	h.gitCmds()
+	if len(h.pushes) != 0 {
+		t.Fatalf("pushed: %+v", h.pushes)
 	}
 	if len(h.host.PRRequests()) != 0 {
 		t.Fatal("opened a PR")
@@ -105,10 +109,13 @@ func TestOpenPRHappyPath(t *testing.T) {
 		"git rev-list --count 'origin/main'..HEAD",
 		"git add -A",
 		"git -c user.name='keith[bot]' -c user.email='1+keith[bot]@users.noreply.github.com' commit -q -m 'Fix login redirect' -m 'Fixes #7.\n\nTested with go test.'",
-		"git push -u origin 'agent/s1'",
 	}
 	if got := h.gitCmds(); !slices.Equal(got, want) {
 		t.Fatalf("git =\n%q\nwant\n%q", got, want)
+	}
+	// The worker pushed the session branch, after the commit.
+	if len(h.pushes) != 1 || h.pushes[0].FullName != "acme/api" || h.pushes[0].Branch != "agent/s1" {
+		t.Fatalf("pushes = %+v", h.pushes)
 	}
 	for _, c := range h.gitCmds() {
 		if strings.Contains(strings.ToLower(c), "token") || strings.Contains(c, "https://") {
@@ -135,8 +142,8 @@ func TestOpenPRHappyPath(t *testing.T) {
 	if r.IsError || !strings.Contains(text(r), "existing pull request #100") {
 		t.Fatalf("second = %q", text(r))
 	}
-	if got := h.gitCmds(); !slices.Contains(got, "git push -u origin 'agent/s1'") || !strings.Contains(got[4], "user.name='Keith'") {
-		t.Fatalf("second git = %q", got)
+	if got := h.gitCmds(); len(got) != 5 || !strings.Contains(got[4], "user.name='Keith'") || len(h.pushes) != 2 {
+		t.Fatalf("second git = %q, pushes %d", got, len(h.pushes))
 	}
 	if len(h.host.PRRequests()) != 1 || len(agenttest.Payloads[events.PROpenedPayload](h.events, events.TypePROpened)) != 1 {
 		t.Fatal("opened a second PR")
@@ -158,9 +165,18 @@ func TestOpenPRCommittedButClean(t *testing.T) {
 }
 
 func TestOpenPRFailures(t *testing.T) {
+	const secret = "ghs_pushTokenThatMustNotShow"
 	h := newToolHarness(t)
-	h.sb.SetHandler(gitRepo{head: "agent/s1", status: " M a\n", ahead: "0", pushExit: 1}.handler())
-	wantErrorResult(t, h.tool("p1", "open_pr", prInput), "git push failed (exit 1):\n! [rejected]")
+	h.run.Redact = func(s string) string { return strings.ReplaceAll(s, secret, "[REDACTED]") }
+	h.sb.SetHandler(gitRepo{head: "agent/s1", status: " M a\n", ahead: "0"}.handler())
+	h.pushErr = errors.New("the remote refused the update: protected branch hook declined (" + secret + ")")
+	r := h.tool("p1", "open_pr", prInput)
+	wantErrorResult(t, r, "Pushing agent/s1 failed: the remote refused the update: protected branch hook declined ([REDACTED])")
+	if len(h.host.PRRequests()) != 0 {
+		t.Fatal("opened a PR after a failed push")
+	}
+	h.pushErr = nil
+	h.gitCmds()
 
 	h.sb.SetHandler(gitRepo{head: "agent/s1", status: " M a\n", ahead: "0", commitExit: 1}.handler())
 	wantErrorResult(t, h.tool("p2", "open_pr", prInput), "hook failed: lint")
@@ -179,6 +195,14 @@ func TestOpenPRFailures(t *testing.T) {
 	wantErrorResult(t, h.tool("p6", "open_pr", prInput), "repo is required")
 	h.run.Host = nil
 	wantErrorResult(t, h.tool("p7", "open_pr", prInput), "not available")
+	// Without the worker's Push hook there is no way to push.
+	h.run.Host, h.run.Push = h.host, nil
+	h.run.Repos = h.run.Repos[:1]
+	h.sb.ResetCalls()
+	wantErrorResult(t, h.tool("p8", "open_pr", prInput), "not available")
+	if len(h.sb.ExecRequests()) != 0 {
+		t.Errorf("open_pr without Push ran %q", h.gitCmds())
+	}
 }
 
 // TestOpenPRRedactsTitleBodyAndCommit: a secret the model copied into the

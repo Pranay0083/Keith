@@ -115,7 +115,7 @@ Use message_user for brief progress notes on long tasks. The user may send messa
 const rulesSection = `
 # Rules
 
-- Push only the session's agent/* branch, and only through open_pr. Never push to, rebase or force-push any other branch.
+- Push only the session's agent/* branch, and only through open_pr. Never push to, rebase or force-push any other branch. The sandbox's git credentials are read-only: git push from a shell fails, and open_pr pushes for you.
 - Never print, echo, log or commit secrets such as API keys, tokens, passwords or .env values. The org's secrets are set as environment variables: use them by name ($NAME) without printing them, and keep them out of files you commit.
 - Do not edit files under .github/workflows unless the task explicitly asks for it.
 - If you are blocked by something only the user can resolve (a missing secret or credential, an unclear or contradictory requirement, a decision between options), use ask_user instead of guessing.

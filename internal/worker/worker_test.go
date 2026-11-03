@@ -792,9 +792,30 @@ func TestShipUsesTheAgentsPR(t *testing.T) {
 	if n := len(e.events(s.ID, events.TypePROpened)); n != 1 {
 		t.Errorf("pr.opened = %d", n)
 	}
-	if n := len(e.pushes()); n < 1 {
-		t.Errorf("the worker did not push the leftover changes: %d pushes", n)
+	// open_pr pushed through the worker's Push hook, then the worker's
+	// ship pushed the leftover changes; the sandbox never ran git push.
+	ps := e.pushes()
+	if len(ps) != 2 || ps[0].Old != "" || ps[0].New != fakeTip(1) || ps[1].Old != fakeTip(1) || ps[1].New != fakeTip(2) {
+		t.Errorf("pushes = %+v", ps)
 	}
+	for _, p := range ps {
+		if p.Repo != "acme/web" || p.Ref != "refs/heads/agent/"+s.ID || !strings.HasPrefix(p.Token, "ghs_push") {
+			t.Errorf("push = %+v", p)
+		}
+	}
+	if n := len(e.execs(e.sandbox(s.ID), "git push")); n != 0 {
+		t.Errorf("%d git push commands in the sandbox", n)
+	}
+	toks := e.gh.pushTokens()
+	if len(toks) != 2 {
+		t.Errorf("push tokens = %d", len(toks))
+	}
+	for _, tok := range toks {
+		if !tok.isRevoked() || !slicesEqual(tok.scope, []string{"acme/web"}) {
+			t.Errorf("push token %s: revoked %v, scope %v", tok.val, tok.isRevoked(), tok.scope)
+		}
+	}
+	e.noSecrets(s.ID, "ghs_push1", "ghs_push2")
 	if st := e.st.Session(s.ID); st.Status != events.StatusCompleted || st.Repos[0].PRNumber != 100 {
 		t.Errorf("session = %s, repo %+v", st.Status, st.Repos[0])
 	}

@@ -61,6 +61,7 @@ func (s *session) prepareRun(ctx context.Context) error {
 		AfterFileChange: s.afterFileChange,
 		OnPROpened:      s.onPROpened,
 		Redact:          s.em.redact,
+		Push:            s.pushHook,
 	}
 	s.agentRun.Store(run)
 	return s.loadState(ctx, repos)

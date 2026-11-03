@@ -17,9 +17,8 @@ import (
 const AgentBranchPrefix = "agent/"
 
 const (
-	gitTimeout  = 2 * time.Minute
-	pushTimeout = 5 * time.Minute
-	maxPRTitle  = 256
+	gitTimeout = 2 * time.Minute
+	maxPRTitle = 256
 )
 
 // ValidateAgentBranch checks that name is agent/<something> and a safe git
@@ -91,7 +90,7 @@ func (openPRTool) Execute(ctx context.Context, run *Run, input json.RawMessage) 
 	if err := decodeInput(input, &in); err != nil {
 		return badInput(err), nil
 	}
-	if run.Host == nil {
+	if run.Host == nil || run.Push == nil {
 		return errorResult("Opening pull requests is not available in this session."), nil
 	}
 	rc, bad := pickRepo(run, in.Repo)
@@ -173,8 +172,13 @@ func (openPRTool) Execute(ctx context.Context, run *Run, input json.RawMessage) 
 			return failed("git commit", res, err)
 		}
 	}
-	if res, err := git("git push -u origin "+shellQuote(rc.Branch), pushTimeout); err != nil || res.ExitCode != 0 {
-		return failed("git push", res, err)
+	// The worker pushes, outside the sandbox: the sandbox's git
+	// credentials are read-only.
+	if err := run.Push(ctx, rc); err != nil {
+		if ctx.Err() != nil {
+			return Result{}, ctx.Err()
+		}
+		return errorResult(fmt.Sprintf("Pushing %s failed: %s", rc.Branch, run.redact(err.Error()))), nil
 	}
 
 	if run.state != nil {

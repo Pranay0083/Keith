@@ -58,6 +58,16 @@ type harness struct {
 	sleeps func() []time.Duration
 	stop   bool
 	saves  int
+
+	// pushes are the Run.Push calls; pushErr is what Push returns.
+	pushes  []agent.RepoContext
+	pushErr error
+}
+
+// push is the harness's Run.Push.
+func (h *harness) push(_ context.Context, rc agent.RepoContext) error {
+	h.pushes = append(h.pushes, rc)
+	return h.pushErr
 }
 
 func newHarness(t *testing.T, tools ...agent.Tool) *harness {
@@ -79,6 +89,7 @@ func newHarness(t *testing.T, tools ...agent.Tool) *harness {
 		Shells:    h.shells,
 		Emit:      h.events.Emit,
 		Host:      h.host,
+		Push:      h.push,
 		Repos: []agent.RepoContext{{
 			FullName: "acme/api", Path: "/workspace/api", Branch: "agent/s1", DefaultBranch: "main",
 			Profile: agent.RepoProfile{TestCmd: "go test ./..."},
@@ -123,7 +134,7 @@ func (h *harness) reload() {
 	}
 	h.st = st
 	h.run = &agent.Run{SessionID: h.run.SessionID, Sandbox: h.run.Sandbox, Shells: h.run.Shells,
-		Emit: h.run.Emit, Host: h.run.Host, Repos: h.run.Repos}
+		Emit: h.run.Emit, Host: h.run.Host, Push: h.run.Push, Repos: h.run.Repos}
 }
 
 func call(id, name string, input any) llm.Block {

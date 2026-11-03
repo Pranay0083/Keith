@@ -93,6 +93,13 @@ type Run struct {
 	// session's event log: the pull request title and body and the commit
 	// message open_pr writes. nil leaves text unchanged.
 	Redact func(string) string
+	// Push pushes repo's session branch (RepoContext.Branch) to the code
+	// host from the control plane, where the push credentials stay: the
+	// sandbox's own git credentials are read-only, so a git push in the
+	// sandbox fails. open_pr commits in the sandbox, then calls it. Its
+	// error is shown to the model, so it must not hold secrets. nil means
+	// open_pr is not available.
+	Push func(ctx context.Context, repo RepoContext) error
 
 	// mu guards shellCalls, which CurrentCall reads from the shell
 	// manager's output goroutine.
