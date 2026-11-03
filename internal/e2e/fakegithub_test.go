@@ -768,6 +768,11 @@ func (f *fakeSignIn) UserCanAccessInstallation(context.Context, string, int64) (
 	return true, nil
 }
 
+func (f *fakeSignIn) UserIsOrgAdmin(context.Context, string, string) (bool, error) {
+	f.record("UserIsOrgAdmin")
+	return true, nil
+}
+
 func (f *fakeSignIn) GetInstallation(_ context.Context, id int64) (github.Installation, error) {
 	f.record("GetInstallation")
 	f.mu.Lock()

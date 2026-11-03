@@ -495,7 +495,7 @@ func TestSetupIT(t *testing.T) {
 		return err == nil
 	}
 	w.gh.user = github.User{ID: w.admin.GitHubUserID, Login: "admin"}
-	w.gh.inst = github.Installation{AccountLogin: "acme-two"}
+	w.gh.inst = github.Installation{AccountID: randID(), AccountLogin: "acme-two", AccountType: github.AccountTypeOrganization}
 	w.gh.repos = []github.Repo{{ID: randID(), FullName: "acme-two/svc", DefaultBranch: "trunk", Private: true}}
 	good := state(w.org.ID, w.admin.ID, time.Hour)
 
@@ -560,6 +560,72 @@ func TestSetupIT(t *testing.T) {
 	w.gh.user = github.User{ID: w.admin.GitHubUserID, Login: "admin"}
 	resp := w.do("GET", "/auth/github/callback?installation_id="+itoa64(newInst)+"&setup_action=update&code=c&state="+url.QueryEscape(good), nil, w.as(w.admin.ID))
 	wantRedirect(t, resp, testWebOrigin+"/repos?installed=1")
+}
+
+// Seeing an installation is not owning it: GitHub lists an installation
+// in /user/installations for anyone with read access to one of its
+// repos. Setup links it only for the account itself (a user
+// installation) or an active admin of the organization.
+func TestSetupRequiresOwnershipIT(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.gh.user = github.User{ID: w.admin.GitHubUserID, Login: "admin"}
+	w.gh.canAccess = true // the admin can see every installation below
+	w.gh.repos = []github.Repo{{ID: randID(), FullName: "victim/secret", DefaultBranch: "main", Private: true}}
+	good, err := w.srv.signer.signSetupState(w.org.ID, w.admin.ID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup := func(instID int64) *httptest.ResponseRecorder {
+		return w.do("GET", "/github/setup?installation_id="+itoa64(instID)+"&setup_action=install&code=c0de&state="+url.QueryEscape(good), nil, w.as(w.admin.ID))
+	}
+	connectErr := func(code string) string { return testWebOrigin + "/connect?error=" + code }
+	linked := func(instID int64) bool {
+		_, err := w.st.GetInstallation(ctx, instID)
+		return err == nil
+	}
+
+	for _, tc := range []struct {
+		name     string
+		inst     github.Installation
+		orgAdmin bool
+		adminErr error
+		want     string
+	}{
+		{"org installation, member but not admin", github.Installation{AccountID: randID(), AccountLogin: "victim", AccountType: github.AccountTypeOrganization}, false, nil, "installation_not_verified"},
+		{"org membership lookup fails", github.Installation{AccountID: randID(), AccountLogin: "victim", AccountType: github.AccountTypeOrganization}, true, errors.New("403"), "setup_failed"},
+		{"another user's installation", github.Installation{AccountID: w.admin.GitHubUserID + 1, AccountLogin: "victim", AccountType: github.AccountTypeUser}, true, nil, "installation_not_verified"},
+		{"enterprise installation", github.Installation{AccountID: randID(), AccountLogin: "victim", AccountType: "Enterprise"}, true, nil, "installation_not_verified"},
+	} {
+		w.gh.inst, w.gh.orgAdmin, w.gh.adminErr = tc.inst, tc.orgAdmin, tc.adminErr
+		instID := randID()
+		wantRedirect(t, setup(instID), connectErr(tc.want))
+		if linked(instID) {
+			t.Fatalf("%s: linked", tc.name)
+		}
+	}
+	if calls := strings.Join(w.gh.Calls(), ","); !strings.Contains(calls, "UserIsOrgAdmin:victim") {
+		t.Errorf("membership not checked against the installation's account: %v", calls)
+	}
+	w.gh.adminErr = nil
+
+	// The user's own account, and an org the user administers: linked.
+	w.gh.inst = github.Installation{AccountID: w.admin.GitHubUserID, AccountLogin: "admin", AccountType: github.AccountTypeUser}
+	w.gh.orgAdmin = false // not consulted for a user installation
+	w.gh.repos = []github.Repo{{ID: randID(), FullName: "admin/dotfiles", DefaultBranch: "main"}}
+	own := randID()
+	wantRedirect(t, setup(own), testWebOrigin+"/repos?installed=1")
+	if !linked(own) {
+		t.Fatal("own user installation not linked")
+	}
+	w.gh.inst = github.Installation{AccountID: randID(), AccountLogin: "acme-three", AccountType: github.AccountTypeOrganization}
+	w.gh.orgAdmin = true
+	w.gh.repos = []github.Repo{{ID: randID(), FullName: "acme-three/app", DefaultBranch: "main", Private: true}}
+	admin := randID()
+	wantRedirect(t, setup(admin), testWebOrigin+"/repos?installed=1")
+	if inst, err := w.st.GetInstallation(ctx, admin); err != nil || inst.OrgID != w.org.ID {
+		t.Fatalf("administered org installation: %+v %v", inst, err)
+	}
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }

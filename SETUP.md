@@ -63,7 +63,7 @@ Below, `<api>` is the api's public base URL, the value of `PUBLIC_URL`: for exam
      - If you add more than one callback URL, put this one first: the authorization during installation returns to the App's own (first) callback URL.
    - **Expire user authorization tokens**: leave it as is. Keith uses the user token only once, at sign-in or install, and does not keep it.
    - **Request user authorization (OAuth) during installation**: **check it.**
-     - The api needs the OAuth code that comes back with an install to prove that the person installing can see the installation. Without it, linking fails with `installation_not_verified`.
+     - The api needs the OAuth code that comes back with an install to prove that the person installing owns the account the App went on (their own account, or a GitHub organization they are an owner of). Without it, linking fails with `installation_not_verified`.
      - With it checked, GitHub returns users to the Callback URL after an install, not to a Setup URL. The api recognizes those redirects (they carry `installation_id` and `setup_action`) and handles them as the setup step.
    - **Enable Device Flow**: leave it unchecked.
 
@@ -89,7 +89,13 @@ Below, `<api>` is the api's public base URL, the value of `PUBLIC_URL`: for exam
      | Issues | Read-only | `read_issue`, for sessions started from an issue link |
      | Metadata | Read-only | Required by GitHub; selected automatically |
 
-   - **Organization permissions**: none.
+   - **Organization permissions**:
+
+     | Permission | Access | Why |
+     |---|---|---|
+     | Members | Read-only | Linking an installation on a GitHub organization requires the installer to be an owner of that organization. Keith checks this with the installer's user token, which needs this permission. |
+
+     When you add this permission to an existing App, each organization that installed it must accept the new permission before Keith can link (or relink) that installation.
    - **Account permissions**: none. Sign-in reads only the user's public profile email. Email addresses (read-only) is optional and unused today.
 
 7. **Subscribe to events**: none needed. GitHub delivers `installation` and `installation_repositories` events to every App with an active webhook; there is no checkbox for them. The api answers every other event with `204` and ignores it.
@@ -545,7 +551,8 @@ Use a managed Redis with Lua scripting (`EVAL`) and pub/sub. asynq needs both, a
 | Sign-in returns to `/login?error=oauth_state` | The state cookie was set on one host and the callback hit another. `NEXT_PUBLIC_API_URL` and `PUBLIC_URL` must share a host: `localhost` vs `127.0.0.1` counts as different, as does a tunnel URL in only one of them. The state also expires after 10 minutes. |
 | Signed in, but every `/api/*` call is `401` | The browser is not sending `keith_session`. Either the web app and api are not same-site (see [Cookies and domains](#cookies-and-domains)), or `PUBLIC_URL` is `https://` while you browse the api over `http://` (`Secure` cookie). |
 | `403 bad_origin` on writes, or the WebSocket is refused | `WEB_ORIGIN` does not exactly equal the browser's origin: scheme, host, port, no trailing slash. |
-| `/connect?error=installation_not_verified` | "Request user authorization (OAuth) during installation" is not checked on the App. |
+| `/connect?error=installation_not_verified` | "Request user authorization (OAuth) during installation" is not checked on the App. Or the person installing does not own the account the App went on: a user installation must be their own account, and an organization installation needs an owner of the GitHub organization. |
+| `/connect?error=setup_failed` right after installing on an organization, and the api logs `get org membership … 403` | The App lacks the **Members: Read-only** organization permission, or the organization has not accepted it yet. See [Create the GitHub App](#create-the-github-app), step 6. |
 | `/connect?error=setup_state` | The App was installed from GitHub's page, not from Keith's **Connect** page, or the install took more than 15 minutes. |
 | Webhook deliveries fail with `401` | `GITHUB_WEBHOOK_SECRET` differs from the App's webhook secret, or a relay modified the body. |
 | Creating a session answers `422 provider_unavailable` | The api has no key for that provider. Set `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` on the api too, not only on the worker. |

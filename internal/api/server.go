@@ -36,6 +36,7 @@ type GitHub interface {
 	Exchange(ctx context.Context, code string) (github.UserToken, error)
 	GetUser(ctx context.Context, userToken string) (github.User, error)
 	UserCanAccessInstallation(ctx context.Context, userToken string, installationID int64) (bool, error)
+	UserIsOrgAdmin(ctx context.Context, userToken, org string) (bool, error)
 	GetInstallation(ctx context.Context, installationID int64) (github.Installation, error)
 	ListInstallationRepos(ctx context.Context, installationID int64) ([]github.Repo, error)
 	InstallURL(appSlug, state string) (string, error)

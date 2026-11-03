@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/Pranay0083/keith/internal/github"
 	"github.com/Pranay0083/keith/internal/hooks"
 	"github.com/Pranay0083/keith/internal/store"
 )
@@ -69,8 +70,9 @@ const (
 
 // handleSetup is GET /github/setup, the App's Setup URL. It links an
 // installation to the org bound in state, but only after proving the
-// signed-in user can see that installation on GitHub: anyone can call
-// this URL with someone else's installation_id.
+// signed-in user owns the account the installation is on: anyone can
+// call this URL with someone else's installation_id, and anyone with
+// read access to one of its repos can see an installation.
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	fail := func(code string, err error) {
@@ -116,9 +118,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Prove the user can see the installation: exchange the code, check
-	// the token is this user's, then look for the installation in
-	// GET /user/installations.
+	// 3. Prove the user owns the installation: exchange the code, check
+	// the token is this user's, look for the installation in
+	// GET /user/installations, then require the user to be its account
+	// (a user installation) or an active admin of its organization.
 	instID, err := strconv.ParseInt(q.Get("installation_id"), 10, 64)
 	if err != nil || instID <= 0 {
 		fail(setupErrFailed, nil)
@@ -153,12 +156,33 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Link the installation to the org.
 	inst, err := s.gh.GetInstallation(ctx, instID)
 	if err != nil {
 		fail(setupErrFailed, err)
 		return
 	}
+	switch inst.AccountType {
+	case github.AccountTypeUser:
+		if inst.AccountID != user.GitHubUserID {
+			fail(setupErrNotVerified, nil)
+			return
+		}
+	case github.AccountTypeOrganization:
+		admin, err := s.setupGH.UserIsOrgAdmin(ctx, tok.AccessToken, inst.AccountLogin)
+		if err != nil {
+			fail(setupErrFailed, err)
+			return
+		}
+		if !admin {
+			fail(setupErrNotVerified, nil)
+			return
+		}
+	default:
+		fail(setupErrNotVerified, nil)
+		return
+	}
+
+	// 4. Link the installation to the org.
 	status := store.InstallationActive
 	if inst.Suspended {
 		status = store.InstallationSuspended

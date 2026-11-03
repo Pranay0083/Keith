@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -221,6 +222,60 @@ func TestUserCanAccessInstallation(t *testing.T) {
 	}
 	if _, err := a.UserCanAccessInstallation(ctx, "ghu_spoofed", 101); err == nil {
 		t.Error("bad token: no error")
+	}
+}
+
+func TestUserIsOrgAdmin(t *testing.T) {
+	f := newFakeGitHub(t)
+	memberships := map[string]map[string]any{
+		"acme":    {"state": "active", "role": "admin"},
+		"members": {"state": "active", "role": "member"},
+		"pending": {"state": "pending", "role": "admin"},
+	}
+	var paths []string
+	f.mux.HandleFunc("GET /user/memberships/orgs/{org}", func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch {
+		case bearer(r) == "ghu_noperm":
+			writeJSON(w, http.StatusForbidden, map[string]string{"message": "Resource not accessible by integration"})
+		case bearer(r) != "ghu_user":
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Bad credentials"})
+		case memberships[r.PathValue("org")] != nil:
+			writeJSON(w, http.StatusOK, memberships[r.PathValue("org")])
+		default:
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+	})
+	a := f.app(t)
+	ctx := context.Background()
+
+	for org, want := range map[string]bool{"acme": true, "members": false, "pending": false, "elsewhere": false} {
+		got, err := a.UserIsOrgAdmin(ctx, "ghu_user", org)
+		if err != nil || got != want {
+			t.Errorf("%s: %v, %v; want %v", org, got, err, want)
+		}
+	}
+	if !slices.Contains(paths, "/user/memberships/orgs/acme") {
+		t.Errorf("paths %v", paths)
+	}
+	// No Members permission: an error that says so, not false.
+	if _, err := a.UserIsOrgAdmin(ctx, "ghu_noperm", "acme"); err == nil || !strings.Contains(err.Error(), "Members organization permission") {
+		t.Errorf("403: err = %v", err)
+	}
+	if _, err := a.UserIsOrgAdmin(ctx, "ghu_wrong", "acme"); err == nil {
+		t.Error("bad token: no error")
+	}
+	n := len(paths)
+	for _, org := range []string{"", "../app", "acme/x", "a?b", strings.Repeat("a", 40)} {
+		if _, err := a.UserIsOrgAdmin(ctx, "ghu_user", org); err == nil {
+			t.Errorf("org %q: no error", org)
+		}
+	}
+	if _, err := a.UserIsOrgAdmin(ctx, "", "acme"); err == nil {
+		t.Error("empty token: no error")
+	}
+	if len(paths) != n {
+		t.Errorf("invalid input reached GitHub: %v", paths[n:])
 	}
 }
 

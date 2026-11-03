@@ -43,6 +43,8 @@ type fakeGitHub struct {
 	userErr   error
 	canAccess bool
 	accessErr error
+	orgAdmin  bool
+	adminErr  error
 	inst      github.Installation
 	instErr   error
 	repos     []github.Repo
@@ -84,6 +86,11 @@ func (f *fakeGitHub) GetUser(_ context.Context, tok string) (github.User, error)
 func (f *fakeGitHub) UserCanAccessInstallation(_ context.Context, tok string, id int64) (bool, error) {
 	f.record("UserCanAccessInstallation")
 	return f.canAccess, f.accessErr
+}
+
+func (f *fakeGitHub) UserIsOrgAdmin(_ context.Context, tok, org string) (bool, error) {
+	f.record("UserIsOrgAdmin:" + org)
+	return f.orgAdmin, f.adminErr
 }
 
 func (f *fakeGitHub) GetInstallation(_ context.Context, id int64) (github.Installation, error) {
@@ -187,7 +194,7 @@ func newHarness(t *testing.T, st *store.Store) *harness {
 	}
 	h := &harness{
 		t: t, st: st, cfg: testConfig(), q: &queuetest.Recorder{}, ctl: control.NewMem(),
-		gh:  &fakeGitHub{token: "gho_user", slug: "keith-agent", canAccess: true},
+		gh:  &fakeGitHub{token: "gho_user", slug: "keith-agent", canAccess: true, orgAdmin: true},
 		bus: memevents.NewBus(), evs: memevents.NewStore(), dedupe: &memDeduper{},
 	}
 	h.srv, err = New(Deps{

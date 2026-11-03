@@ -132,7 +132,14 @@ Backend redirect handler, the GitHub App's Setup URL. GitHub sends the browser h
 
 1. Require a valid `keith_session`. Verify `state`'s signature and expiry, and that its `user_id` is the cookie's user and the user is still `owner` or `admin` of its `org_id`.
 2. If `setup_action=request` (an org member asked a GitHub org owner to approve), stop and `302` to `WEB_ORIGIN/connect?pending=1`.
-3. Exchange `code` for a user token. Call `GET /user/installations` with it and require `installation_id` in the result, and the token's user to be the cookie user's `github_user_id`. Anyone can hit this URL with someone else's ID; this check is what stops that.
+3. Prove the user owns the installation. Anyone can hit this URL with someone else's ID; these checks are what stop that.
+   - Exchange `code` for a user token, and require the token's user to be the cookie user's `github_user_id`.
+   - Call `GET /user/installations` with the token and require `installation_id` in the result.
+   - Seeing an installation is not enough: GitHub lists one for anyone with read access to one of its repos. Fetch the installation (`GET /app/installations/{id}`) and require ownership of its account:
+     - a `User` account must be the user itself (`account.id == github_user_id`);
+     - for an `Organization` account, `GET /user/memberships/orgs/{org}` with the user token must answer `state: active`, `role: admin` (an owner of the GitHub org);
+     - any other account type is refused.
+   - A failed check is `installation_not_verified`; a GitHub error (including `403` when the App lacks the Members organization permission) is `setup_failed`.
 4. Upsert `github_installations` for `org_id`. If that `installation_id` already belongs to another org, stop with `installation_other_org`.
 5. List the installation's repos with an installation token and upsert `repos` (`accessible = true`; repos no longer listed become `accessible = false`).
 6. `302` to `WEB_ORIGIN/repos?installed=1`.

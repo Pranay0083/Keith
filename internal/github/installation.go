@@ -8,12 +8,19 @@ import (
 	gh "github.com/google/go-github/v93/github"
 )
 
+// Installation account types (Installation.AccountType).
+const (
+	AccountTypeUser         = "User"
+	AccountTypeOrganization = "Organization"
+)
+
 // Installation is an installation of the App on a user or org account.
 type Installation struct {
 	ID           int64
 	AccountID    int64
 	AccountLogin string
-	// AccountType is "Organization" or "User".
+	// AccountType is AccountTypeOrganization or AccountTypeUser (GitHub
+	// may report others, such as "Enterprise").
 	AccountType string
 	// RepositorySelection is "all" or "selected".
 	RepositorySelection string

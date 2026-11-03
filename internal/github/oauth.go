@@ -86,7 +86,8 @@ var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // state through the install and, with "Request user authorization during
 // installation" on, sends it back to the callback with the OAuth code and
 // installation_id. Check state there as for sign-in, then Exchange the
-// code and call UserCanAccessInstallation.
+// code, call UserCanAccessInstallation, and check that the user owns the
+// installation's account (UserIsOrgAdmin for an organization).
 func (a *App) InstallURL(appSlug, state string) (string, error) {
 	if !slugRe.MatchString(appSlug) {
 		return "", fmt.Errorf("github: invalid App slug %q", appSlug)
@@ -201,12 +202,54 @@ func (a *App) GetUser(ctx context.Context, userToken string) (User, error) {
 	}, nil
 }
 
+// orgLoginRe is a GitHub organization login, checked before it goes into
+// a URL path.
+var orgLoginRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+
+// UserIsOrgAdmin reports whether the user behind userToken is an active
+// admin (owner) of the GitHub organization org, from
+// GET /user/memberships/orgs/{org}. A user who is not a member (404), or
+// whose membership is pending or not admin, is false.
+//
+// For a user token this App issued, GitHub needs the App's "Members"
+// organization permission (read) to answer; without it the call fails
+// with 403, which is an error here, not false. An invalid token is an
+// error too.
+func (a *App) UserIsOrgAdmin(ctx context.Context, userToken, org string) (bool, error) {
+	if userToken == "" {
+		return false, errors.New("github: get org membership: empty token")
+	}
+	if !orgLoginRe.MatchString(org) {
+		return false, fmt.Errorf("github: get org membership: invalid organization login %q", org)
+	}
+	c, err := a.client(userToken)
+	if err != nil {
+		return false, err
+	}
+	m, resp, err := c.Organizations.GetOrgMembership(ctx, "", org)
+	if statusCode(resp) == http.StatusNotFound {
+		return false, nil
+	}
+	if err != nil {
+		if statusCode(resp) == http.StatusForbidden {
+			return false, fmt.Errorf("github: get org membership of %s: %w (does the App have the Members organization permission?)", org, err)
+		}
+		return false, wrapErr("get org membership of "+org, resp, err)
+	}
+	return m.GetState() == "active" && m.GetRole() == "admin", nil
+}
+
 // UserCanAccessInstallation reports whether the user behind userToken
 // has access to installationID of this App, by paging through
 // GET /user/installations. The setup handler must check this before it
 // links an installation to an org: anyone can call the setup URL with
-// someone else's installation_id. An invalid token is an error, not
-// false.
+// someone else's installation_id.
+//
+// Access is not ownership: GitHub lists an installation for any user
+// with read access to one of its repos. Before linking, the setup
+// handler also requires the user to be the installation's account (a
+// user installation) or an admin of it (UserIsOrgAdmin). An invalid
+// token is an error, not false.
 func (a *App) UserCanAccessInstallation(ctx context.Context, userToken string, installationID int64) (bool, error) {
 	if userToken == "" {
 		return false, errors.New("github: list user installations: empty token")
