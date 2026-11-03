@@ -180,7 +180,7 @@ export function initialSessionState(sessionId: string): SessionState {
  * Events for another session are ignored.
  */
 export function applyEvent(state: SessionState, event: SessionEvent): SessionState {
-  if (event.session_id !== state.sessionId) return state;
+  if (!sameId(event.session_id, state.sessionId)) return state;
 
   if (event.seq === 0) {
     return isEphemeral(event.type) ? fold(state, event) : state;
@@ -220,6 +220,30 @@ export function applyEvents(state: SessionState, events: readonly SessionEvent[]
 /** True when stored events are waiting on a gap in seq. */
 export function hasGap(state: SessionState): boolean {
   return state.ahead.length > 0;
+}
+
+/**
+ * Whether two session IDs name the same session. The server sends IDs in
+ * canonical form (lower-case, hyphenated), but the view's ID comes from the
+ * URL, which may spell the same UUID differently.
+ */
+function sameId(a: string, b: string): boolean {
+  return a === b || canonicalUuid(a) === canonicalUuid(b);
+}
+
+/**
+ * The canonical form of a UUID in any spelling Go's uuid.Parse accepts
+ * (any case, braces, a urn:uuid: prefix, no hyphens); other strings as
+ * they are.
+ */
+function canonicalUuid(id: string): string {
+  let s = id.toLowerCase();
+  if (s.startsWith("urn:uuid:")) s = s.slice("urn:uuid:".length);
+  else if (s.startsWith("{") && s.endsWith("}")) s = s.slice(1, -1);
+  if (/^[0-9a-f]{32}$/.test(s)) {
+    s = `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+  }
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s) ? s : id;
 }
 
 function fold(state: SessionState, e: SessionEvent): SessionState {

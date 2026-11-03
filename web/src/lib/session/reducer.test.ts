@@ -101,6 +101,24 @@ describe("seq ordering and dedupe", () => {
     expect(s).toEqual(fresh());
   });
 
+  it("matches the canonical session ID the server sends however the URL spells it", () => {
+    const uuid = "3c4b0000-0000-4000-8000-0000000000ab";
+    for (const spelling of [
+      uuid.toUpperCase(),
+      `{${uuid}}`,
+      `urn:uuid:${uuid}`,
+      uuid.replaceAll("-", "").toUpperCase(),
+    ]) {
+      const s = applyEvent(initialSessionState(spelling), ev(1, "session.status", { status: "running" }, uuid));
+      expect(s.lastSeq, spelling).toBe(1);
+      expect(s.status, spelling).toBe("running");
+    }
+    // Other IDs still have to match exactly.
+    const other = "3c4b0000-0000-4000-8000-0000000000ac";
+    expect(applyEvent(initialSessionState(uuid), ev(1, "session.status", { status: "running" }, other)).lastSeq).toBe(0);
+    expect(applyEvent(initialSessionState("Demo"), ev(1, "session.status", { status: "running" }, "demo")).lastSeq).toBe(0);
+  });
+
   it("ignores a delta that claims a stored seq", () => {
     const s = applyEvent(fresh(), ev(1, "message.delta", { message_id: "a1", text: "x" }));
     expect(s.chat).toHaveLength(0);
