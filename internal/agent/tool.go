@@ -78,13 +78,16 @@ type Run struct {
 	// user.email). The zero value means DefaultGitAuthor.
 	GitAuthor GitIdentity
 	// AfterFileChange, if set, is called after write_file, edit_file,
-	// delete_file or undo_edit changed a file and file.changed was
-	// emitted. The worker uses it to save the session's diff. A non-nil
-	// error stops the run.
+	// delete_file or undo_edit changed a file and before file.changed is
+	// emitted, so the worker can save the session's diff first (the web
+	// app fetches the diff when it sees file.changed). A non-nil error
+	// stops the run.
 	AfterFileChange func(ctx context.Context, change FileChange) error
-	// OnPROpened, if set, is called after open_pr opened (or found) a pull
-	// request and pr.opened was emitted, so the worker can record it in
-	// session_repos. A non-nil error stops the run.
+	// OnPROpened, if set, is called after open_pr opened a repo's pull
+	// request and before pr.opened is emitted, so the worker can record it
+	// in session_repos first. It runs once per repo per session; a later
+	// open_pr only pushes new commits to the same PR. A non-nil error
+	// stops the run.
 	OnPROpened func(ctx context.Context, repo RepoContext, pr PR) error
 
 	// mu guards shellCalls, which CurrentCall reads from the shell

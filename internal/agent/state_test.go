@@ -136,7 +136,7 @@ func TestEditHistoryLimits(t *testing.T) {
 func TestDelivered(t *testing.T) {
 	var a Aux
 	for i := 0; i < maxDelivered+10; i++ {
-		a.markDelivered(string(rune('a' + i%26)) + string(rune(i)))
+		a.markDelivered(string(rune('a'+i%26)) + string(rune(i)))
 	}
 	if len(a.Delivered) != maxDelivered {
 		t.Fatalf("len = %d", len(a.Delivered))
