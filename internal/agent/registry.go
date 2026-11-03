@@ -40,6 +40,10 @@ func (o ToolOptions) withDefaults() ToolOptions {
 func DefaultTools(opts ToolOptions) []Tool {
 	o := opts.withDefaults()
 	return []Tool{
+		createShellTool{},
+		shellExecTool{timeout: o.ShellTimeout, maxTimeout: o.MaxShellTimeout, maxOutput: o.MaxOutputBytes},
+		shellReadTool{maxOutput: o.MaxOutputBytes},
+		shellInterruptTool{maxOutput: o.MaxOutputBytes},
 		messageUserTool{newID: o.NewID},
 		askUserTool{},
 	}
