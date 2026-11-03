@@ -15,7 +15,22 @@ See [docs/architecture.md](docs/architecture.md) for the package map, the trust 
 
 ## Status
 
-Phase 23: cloud pivot in progress; V1 being built. The macOS assistant this repo used to be has been removed (it is in git history). `keith api` serves the API in docs/api.md; `keith worker` is still a stub.
+Phase 23, cloud pivot: the V1 backend is wired end to end (api + worker + web). The macOS assistant this repo used to be has been removed (it is in git history).
+
+What works:
+
+- **Sign-in and connect.** GitHub sign-in, App install and repo sync (setup flow plus webhooks), repo profiles, and org and repo secrets (encrypted at rest, redacted from events).
+- **Sessions.** Create a session from a prompt or an issue link on one or more repos; send follow-up messages, answer questions and stop it; watch it live over WebSocket with replay on reconnect.
+- **Worker.** One sandbox per session, on Docker locally or Daytona. The worker:
+  - clones the repos onto an `agent/<id>` branch with short-lived installation tokens;
+  - runs setup, with per-repo snapshots;
+  - runs the agent loop on Claude or Gemini;
+  - runs the repo's tests and opens the PR;
+  - pauses idle sandboxes, and a reaper deletes them later.
+- **`keith run --local`** runs one task against a real repo with a personal access token: no App, Postgres or Redis.
+- **`keith sandbox-bench`** compares sandbox providers.
+
+See [SETUP.md](SETUP.md) to create the GitHub App, configure, run locally, test and deploy.
 
 ## Development
 

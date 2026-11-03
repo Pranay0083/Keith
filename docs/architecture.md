@@ -8,34 +8,57 @@ One `keith` binary runs every role, chosen by subcommand:
 
 | Role | Command | Does |
 |---|---|---|
-| API | `keith api` | HTTP + WebSocket API, GitHub OAuth sign-in, GitHub App setup and webhooks, writes `sessions` rows and enqueues `run_session` jobs, replays and streams events. |
-| Worker | `keith worker` | Takes a session lease, mints a repo-scoped installation token, provisions the sandbox, runs the agent loop, opens the PR, parks the sandbox. |
+| API | `keith api` | HTTP + WebSocket API, GitHub OAuth sign-in, GitHub App setup, verifies webhooks and queues them, writes `sessions` rows and enqueues `run_session` / `resume_session` jobs, replays and streams events. |
+| Worker | `keith worker` | Runs sessions (see [Worker](#worker-internalworker)) and processes queued webhooks. Takes a session lease, mints repo-scoped installation tokens, provisions and sets up the sandbox, runs the agent loop, verifies and ships the PR, parks the sandbox. A reaper deletes idle sandboxes. |
 | Web | `web/` (Next.js) | Renders only from the event stream. |
 
-Postgres holds state and the event log. Redis carries asynq jobs, event pub/sub and session leases.
+Postgres holds state and the event log. Redis carries asynq jobs, event pub/sub, session leases and control signals (Stop). Both services apply the migrations at start, behind an advisory lock. [SETUP.md](../SETUP.md) covers configuration and deployment.
 
 ## Package map
 
 ```
-cmd/keith ── wires config and services
-  ├── internal/api ──────┬── store, events, queue, github, secrets, config
+cmd/keith ── wires config and services: api, worker, run --local, sandbox-bench
+  ├── internal/api ──────┬── store, events, queue, control, hooks, github,
+  │                      │   secrets, config
   │                      └── never imports agent
-  └── internal/worker ───┬── agent, llm/<provider>, sandbox/<provider>,
-                         │   github, store, events, queue, secrets, config
-                         └── the only package that imports everything
+  └── internal/worker ───┬── agent, llm, sandbox, sandbox/tmuxshell, github,
+                         │   store, events, queue, lease, control, secrets,
+                         │   config
+                         └── the only package that runs the agent loop
 
-internal/agent      → llm, sandbox, events          (loop, tools, prompt)
-internal/agent/agenttest → agent, events, llm, sandbox  fakes + append-only check
-internal/llm        → (nothing internal)             contract + llmtest fake
-internal/llm/{anthropic,gemini}   → llm              SDKs stay inside
-internal/sandbox    → (nothing internal)             contract
-internal/sandbox/{docker,daytona,fake} → sandbox     SDKs stay inside
-internal/events     → (nothing internal)             contract + memevents fake
-internal/store      → events                         pgx, implements events.Store
-internal/github     → agent (for RepoHost types)     implements agent.RepoHost
-internal/config     → (nothing internal)
-internal/notify/*   → (nothing internal)             V2 channels
-migrations          → (nothing)                      goose SQL, embedded
+internal/agent             → llm, sandbox, events         loop, tools, system prompt
+internal/agent/agenttest   → agent, events, llm, sandbox  fakes + append-only check
+internal/llm               → (nothing internal)           provider contract
+internal/llm/{anthropic,gemini} → llm                     SDKs stay inside
+internal/llm/llmtest       → llm                          scripted provider for tests
+internal/llm/providers     → config, llm, llm/{anthropic,gemini}   builds a provider by name
+internal/sandbox           → (nothing internal)           contract: Provider, Sandbox, Shells
+internal/sandbox/docker    → sandbox                      local containers via the docker CLI
+internal/sandbox/daytona   → sandbox                      Daytona; the SDK stays inside
+internal/sandbox/memsandbox → sandbox                     in-memory sandbox for tests
+internal/sandbox/tmuxshell → sandbox                      named tmux shells over any Sandbox
+internal/sandbox/providers → config, sandbox, sandbox/{docker,daytona}  provider from config
+internal/events            → (nothing internal)           event types, Store and Bus contracts
+internal/events/memevents  → events                       in-memory Store and Bus
+internal/events/pgevents   → events                       Postgres events.Store
+internal/events/redisbus   → events                       Redis pub/sub events.Bus
+internal/store             → events, events/pgevents, migrations   pgx data layer
+internal/github            → agent (for RepoHost types)   App auth, tokens, OAuth, webhooks,
+                                                          implements agent.RepoHost
+internal/hooks             → store, github, queue, control, events   webhook processing,
+                                                          repo sync, StopSession
+internal/queue             → (nothing internal)           asynq task types, client, server
+internal/lease             → (nothing internal)           exclusive, expiring Redis lease
+internal/control           → (nothing internal)           Stop signals on Redis pub/sub
+internal/secrets           → events                       envelope encryption + Redactor
+internal/config            → (nothing internal)           environment configuration
+internal/worker/memstore   → events, store (model types)  in-memory worker.Store (tests, run --local)
+internal/e2e               → (tests only)                 end-to-end session on Docker
+internal/notify/telegram   → (nothing internal)           V2 channel
+migrations                 → (nothing)                    goose SQL, embedded
+
+Test helpers: internal/{queue/queuetest, store/storetest, redistest},
+internal/sandbox/internal/{sbutil (shared provider helpers), sbtest}.
 ```
 
 Rules:
@@ -50,8 +73,8 @@ The sandbox is untrusted. It runs whatever the repo and the agent run, and users
 
 - Never inside a sandbox: LLM API keys, the GitHub App private key, the App's OAuth client secret, agent code, prompts or the conversation.
 - Inside a sandbox: the repos at `/workspace/<repo>`, a git credential helper holding a 1-hour installation token scoped to the session's repos with `contents: write` only, and the org's own secrets as env vars.
-- The worker runs every tool call. Shell and file tools become sandbox calls. `read_issue`, `create_pull_request`, `message_user` and `ask_user` run in the worker with credentials that never reach the sandbox.
-- The agent pushes only to `agent/*` branches. Sandbox egress is allowlisted. The agent runs as a non-root user.
+- The worker runs every tool call. Shell and file tools become sandbox calls. `read_issue`, `open_pr`, `message_user` and `ask_user` run in the worker with credentials that never reach the sandbox.
+- The agent pushes only to `agent/*` branches. Sandbox egress is allowlisted on Daytona (GitHub and the common package registries); the local docker provider does not enforce it. The agent runs as a non-root user.
 - Org and repo secrets are encrypted at rest (envelope encryption under `SECRETS_KEY`) and redacted from every event.
 - In V1 the GitHub token service is a library (`internal/github`) that the API and worker both call in-process, so both control-plane services hold the App private key. Moving it into its own service is a later hardening step.
 
@@ -66,11 +89,93 @@ Each session has one append-only log in `events`, keyed `(session_id, seq)`. The
 
 Chat has no table of its own: it is the `message.*` rows in `events`. The model's own conversation lives in `agent_state.llm_messages` so a paused session resumes exactly.
 
+## Worker (`internal/worker`)
+
+`keith worker` runs:
+
+- two asynq servers on Redis: one for the `sessions` queue (`run_session`, `resume_session`; `WORKER_CONCURRENCY` at once), one for the `webhooks` queue (`github_webhook`, 4 at once, handled by `hooks.Handler`). Long sessions therefore never starve uninstall handling.
+- the reaper loop.
+
+On SIGTERM (or SIGINT) running sessions stop at once. Each one saves its state, parks its sandbox, releases its lease and returns `ErrBusy`, so the task is retried, possibly on another worker, and resumes from `agent_state`.
+
+Workers scale horizontally: the per-session lease, not the queue, guarantees one writer per session.
+
+### One task
+
+`run_session` and `resume_session` share one handler. A `resume_session` is a wakeup, not a command: the worker decides what to do from the stored session (status, pending `session_inputs`, cancel flag, `agent_state`), so duplicate or late wakeups are harmless.
+
+1. **Lease.** Take the session's Redis lease, or return `queue.ErrBusy`; the task is then retried in 5 s without counting as a failure.
+   - `KeepAlive` renews the lease, and if it is lost, the run's context is cancelled.
+   - The event emitter checks the lease before every append. pgevents does not check the fencing token, so this closes the fencing gap.
+   - The emitter also redacts every payload with a `secrets.Redactor`, built from the session's decrypted org and repo secrets plus the sandbox git token as it rotates. It streams shell output through `Redactor.Stream`, so a secret split across chunks is still caught.
+2. **Provision** (a new session, or one whose sandbox was reaped).
+   - **Two GitHub installation tokens** per session:
+     - *Sandbox token*: `contents: write` on the session's repos only. It reaches the sandbox only as `/run/keith/git-token`, read by the git credential helper. The helper is installed as root at `/usr/local/bin/git-credential-keith` and answers only for `GIT_BASE_URL`'s host. The token file is rewritten from the token source's refresh hook, so the token rotates without re-cloning.
+     - *Worker token*: `WorkerPermissions`, on the session's repos plus the issue's repo. It backs the `RepoHost` behind `read_issue` and `open_pr`, and never enters the sandbox.
+     - In V1 all of a session's repos must be on one installation; otherwise the session fails with `repos_span_installations`.
+   - **The sandbox** starts from the repo's snapshot (a single-repo session on the same provider) or from the base template (`SANDBOX_TEMPLATE`). Org and repo secrets are its environment variables; a repo secret overrides an org secret of the same name.
+   - **Repos** are cloned as the sandbox user to `/workspace/<name>`, from plain URLs (`GIT_BASE_URL` + `owner/name.git`; never a token in a URL). The worker checks out `agent/<session-id>`: the remote branch if it exists, else a new branch from the default branch.
+3. **Set up** (status `setting_up`).
+   - Each repo profile's install command runs in a tmux shell, streamed to the UI as a synthetic tool call. A failing install does not fail the session: the agent is told, and can fix it.
+   - After the first successful setup of a single-repo session that has no current snapshot, the worker snapshots the sandbox. Before the snapshot it removes the token file and shell logs, and the docker provider blanks the env vars, so neither the token nor the secrets are baked in. It then records the snapshot with a hash of the repo's lockfiles.
+   - Later sessions on that repo start from the snapshot. They fetch and check out, and re-run the install only when the lockfile hash has changed.
+4. **Run the loop** (status `running`).
+   - The worker emits the session's first `message.user` (the prompt) itself, then builds a new `agent.State` or loads the saved one.
+   - It wires `agent.Runner`:
+     - `Inputs`: pending `session_inputs`.
+     - `Delivered`: marks them consumed, and sets status `running` after an answer.
+     - `ShouldStop`: the cancel flag, a control-channel Stop (which also interrupts every shell), or the time limit.
+     - `Checkpoint`: saves `agent_state`.
+     - `AfterFileChange`: saves the repo diff against the base commit, untracked files included.
+     - `OnPROpened`: records the PR.
+   - Limits: `MAX_SESSION_DURATION` per run, `MAX_SESSION_TOKENS` per session, and a step cap per run.
+5. **Act on the outcome.**
+
+   | Outcome | What the worker does | Status |
+   |---|---|---|
+   | `end_turn` | **Verify:** run each changed repo's test command. On failure, feed the result back to the model as a message and loop again, at most 2 cycles. **Ship:** if there are changes and the agent opened no PR, commit, push and open one itself. | `completed`, or `no_changes` when nothing changed |
+   | `paused` | Record the open question. | `waiting_for_user` |
+   | `cancelled` | Interrupt running commands, clear the open question and the cancel flag. | `cancelled` |
+   | `step_cap`, `budget_exceeded`, `failed` (and the time limit) | Emit an `error` event with the reason. | `failed` |
+
+6. **Re-check, then park.** After any terminal or `waiting_for_user` status, and before releasing the lease, the worker re-checks pending inputs and the cancel flag (the queue contract in `internal/queue`): input that arrived while it was finishing has no other wakeup. Then it parks:
+   - delete the token file;
+   - revoke both tokens;
+   - pause the sandbox;
+   - release the lease.
+
+   A worker that has lost the lease never touches the sandbox again.
+
+### Resume
+
+A follow-up message, an answer or a Stop on a parked session enqueues `resume_session`.
+
+- **Sandbox still parked:** the worker resumes it, writes a fresh token, reattaches the tmux shells and continues from `agent_state`.
+- **Sandbox reaped:** the worker provisions a new one and clones again. It checks out `agent/<id>` if that branch exists on the remote, else starts fresh from the default branch. Uncommitted work from the reaped sandbox is lost; this is a known limitation.
+
+### Reaper
+
+Every minute, the reaper deletes:
+
+- the sandboxes of sessions parked (terminal or `waiting_for_user`) for longer than `SANDBOX_IDLE_TIMEOUT`, checked under the session's lease;
+- orphaned docker containers: labelled `keith.role=worker` (set by docker-provider workers), referenced by no session, and older than a grace period (10 minutes) that covers the moment between create and record.
+
+### Local mode
+
+`keith run --local` runs the same session code in one process:
+
+- `internal/worker/memstore` in place of Postgres;
+- in-memory events and an in-process lease in place of Redis;
+- the docker provider;
+- one personal access token in place of both App tokens. It reaches the sandbox through the same token file and credential helper, and it also backs the `RepoHost` (`github.NewPATHost`).
+
 ## Agent loop (`internal/agent`)
 
 The loop runs in the worker, outside the sandbox. It reaches the sandbox only through `sandbox.Sandbox` and `sandbox.Shells`, and GitHub only through `agent.RepoHost`.
 
-### Wiring (wave D)
+### Wiring
+
+`internal/worker` wires the loop (see [Worker](#worker-internalworker)). The seams it fills:
 
 ```go
 ids := newIDFunc() // unique message IDs
