@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Role is a service that runs from the keith binary.
@@ -52,6 +53,16 @@ const (
 	// DefaultMaxActiveSessionsPerOrg is MAX_ACTIVE_SESSIONS_PER_ORG's
 	// default.
 	DefaultMaxActiveSessionsPerOrg = 5
+	// DefaultMaxSessionDuration is MAX_SESSION_DURATION's default.
+	DefaultMaxSessionDuration = 2 * time.Hour
+	// DefaultMaxSessionTokens is MAX_SESSION_TOKENS' default.
+	DefaultMaxSessionTokens = 20_000_000
+	// DefaultSandboxIdleTimeout is SANDBOX_IDLE_TIMEOUT's default.
+	DefaultSandboxIdleTimeout = 30 * time.Minute
+	// DefaultGitBaseURL is GIT_BASE_URL's default.
+	DefaultGitBaseURL = "https://github.com/"
+	// DefaultWorkerConcurrency is WORKER_CONCURRENCY's default.
+	DefaultWorkerConcurrency = 10
 )
 
 // SecretsKeySize is the length in bytes of the decoded SECRETS_KEY.
@@ -122,6 +133,32 @@ type Config struct {
 	SecretsKey []byte
 	// ListenAddr (LISTEN_ADDR) is the api's listen address, default :8080.
 	ListenAddr string
+
+	// Worker limits and settings (all optional).
+	//
+	// MaxSessionDuration (MAX_SESSION_DURATION, a Go duration such as
+	// "2h", default 2h) caps how long the worker runs a session per
+	// wakeup before failing it with time_limit.
+	MaxSessionDuration time.Duration
+	// MaxSessionTokens (MAX_SESSION_TOKENS, default 20,000,000; 0 turns
+	// the budget off) caps a session's cumulative model tokens (input,
+	// output and cache reads and writes).
+	MaxSessionTokens int
+	// SandboxIdleTimeout (SANDBOX_IDLE_TIMEOUT, default 30m) is how long
+	// the sandbox of a finished or waiting session is kept (paused)
+	// before the reaper deletes it.
+	SandboxIdleTimeout time.Duration
+	// GitBaseURL (GIT_BASE_URL, default https://github.com/) is where
+	// repos are cloned from: GitBaseURL + owner/name + ".git". The git
+	// credential helper answers only for its scheme and host.
+	GitBaseURL string
+	// SandboxTemplate (SANDBOX_TEMPLATE, optional) is the image or
+	// provider template new sandboxes start from; empty means the
+	// provider's default (docker: keith-sandbox:latest).
+	SandboxTemplate string
+	// WorkerConcurrency (WORKER_CONCURRENCY, default 10) is how many
+	// sessions one worker runs at once.
+	WorkerConcurrency int
 }
 
 // Load reads the configuration from the process environment.
@@ -169,6 +206,55 @@ func LoadFrom(getenv func(string) string) (*Config, error) {
 	default:
 		errs = append(errs, fmt.Errorf("SANDBOX_PROVIDER: unknown provider %q (want %s or %s)",
 			c.SandboxProvider, SandboxProviderDocker, SandboxProviderDaytona))
+	}
+
+	c.SandboxTemplate = get("SANDBOX_TEMPLATE")
+	for _, d := range []struct {
+		name string
+		dst  *time.Duration
+		def  time.Duration
+	}{
+		{"MAX_SESSION_DURATION", &c.MaxSessionDuration, DefaultMaxSessionDuration},
+		{"SANDBOX_IDLE_TIMEOUT", &c.SandboxIdleTimeout, DefaultSandboxIdleTimeout},
+	} {
+		*d.dst = d.def
+		if v := get(d.name); v != "" {
+			x, err := time.ParseDuration(v)
+			if err != nil || x <= 0 {
+				errs = append(errs, fmt.Errorf("%s: %q is not a positive duration (for example 30m or 2h)", d.name, v))
+			}
+			*d.dst = x
+		}
+	}
+	for _, n := range []struct {
+		name   string
+		dst    *int
+		def    int
+		zeroOK bool
+	}{
+		{"MAX_SESSION_TOKENS", &c.MaxSessionTokens, DefaultMaxSessionTokens, true},
+		{"WORKER_CONCURRENCY", &c.WorkerConcurrency, DefaultWorkerConcurrency, false},
+	} {
+		*n.dst = n.def
+		if v := get(n.name); v != "" {
+			x, err := strconv.Atoi(v)
+			if err != nil || x < 0 || (x == 0 && !n.zeroOK) {
+				errs = append(errs, fmt.Errorf("%s: %q is not a valid count", n.name, v))
+			}
+			*n.dst = x
+		}
+	}
+	c.GitBaseURL = DefaultGitBaseURL
+	if v := get("GIT_BASE_URL"); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+			u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, fmt.Errorf("GIT_BASE_URL: %q is not an http(s) base URL", v))
+		}
+		if !strings.HasSuffix(v, "/") {
+			v += "/"
+		}
+		c.GitBaseURL = v
 	}
 
 	c.MaxActiveSessionsPerOrg = DefaultMaxActiveSessionsPerOrg
@@ -331,13 +417,15 @@ func (c *Config) String() string {
 		"DefaultLLMProvider:%s DefaultModel:%s DefaultGeminiModel:%s MaxActiveSessionsPerOrg:%d "+
 		"SandboxProvider:%s DaytonaAPIKey:%s DaytonaAPIURL:%s "+
 		"GitHubAppID:%d GitHubAppClientID:%s GitHubAppClientSecret:%s GitHubWebhookSecret:%s GitHubAppSlug:%s "+
-		"GitHubAppPrivateKey:%s PublicURL:%s WebOrigin:%s SessionSecret:%s SecretsKey:%s ListenAddr:%s}",
+		"GitHubAppPrivateKey:%s PublicURL:%s WebOrigin:%s SessionSecret:%s SecretsKey:%s ListenAddr:%s "+
+		"MaxSessionDuration:%s MaxSessionTokens:%d SandboxIdleTimeout:%s GitBaseURL:%s SandboxTemplate:%s WorkerConcurrency:%d}",
 		set(c.DatabaseURL != ""), set(c.RedisURL != ""), set(c.AnthropicAPIKey != ""), set(c.GeminiAPIKey != ""),
 		c.DefaultLLMProvider, c.DefaultModel, c.DefaultGeminiModel, c.MaxActiveSessionsPerOrg,
 		c.SandboxProvider, set(c.DaytonaAPIKey != ""), c.DaytonaAPIURL,
 		c.GitHubAppID, c.GitHubAppClientID, set(c.GitHubAppClientSecret != ""), set(c.GitHubWebhookSecret != ""),
 		c.GitHubAppSlug, set(len(c.GitHubAppPrivateKey) > 0), c.PublicURL, c.WebOrigin, set(c.SessionSecret != ""),
-		set(len(c.SecretsKey) > 0), c.ListenAddr)
+		set(len(c.SecretsKey) > 0), c.ListenAddr,
+		c.MaxSessionDuration, c.MaxSessionTokens, c.SandboxIdleTimeout, c.GitBaseURL, c.SandboxTemplate, c.WorkerConcurrency)
 }
 
 // GoString keeps %#v from printing secrets.

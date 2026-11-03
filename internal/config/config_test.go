@@ -233,3 +233,36 @@ func TestAPIAdditions(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerAdditions(t *testing.T) {
+	c, err := LoadFrom(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxSessionDuration != DefaultMaxSessionDuration || c.MaxSessionTokens != DefaultMaxSessionTokens ||
+		c.SandboxIdleTimeout != DefaultSandboxIdleTimeout || c.GitBaseURL != "https://github.com/" ||
+		c.WorkerConcurrency != DefaultWorkerConcurrency || c.SandboxTemplate != "" {
+		t.Errorf("defaults = %s", c)
+	}
+	c, err = LoadFrom(env(map[string]string{
+		"MAX_SESSION_DURATION": "45m", "MAX_SESSION_TOKENS": "0", "SANDBOX_IDLE_TIMEOUT": "5m",
+		"GIT_BASE_URL": "http://host.docker.internal:8081/git", "SANDBOX_TEMPLATE": "keith-sandbox-test",
+		"WORKER_CONCURRENCY": "3",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxSessionDuration.String() != "45m0s" || c.MaxSessionTokens != 0 || c.SandboxIdleTimeout.String() != "5m0s" ||
+		c.GitBaseURL != "http://host.docker.internal:8081/git/" || c.SandboxTemplate != "keith-sandbox-test" ||
+		c.WorkerConcurrency != 3 {
+		t.Errorf("parsed = %s", c)
+	}
+	for k, v := range map[string]string{
+		"MAX_SESSION_DURATION": "forever", "SANDBOX_IDLE_TIMEOUT": "-1m", "MAX_SESSION_TOKENS": "-5",
+		"WORKER_CONCURRENCY": "0", "GIT_BASE_URL": "ftp://example.com/",
+	} {
+		if _, err := LoadFrom(env(map[string]string{k: v})); err == nil || !strings.Contains(err.Error(), k) {
+			t.Errorf("%s=%q: err = %v", k, v, err)
+		}
+	}
+}
