@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -300,4 +301,34 @@ func TestCrashAfterSavingAnAnswerStillSetsRunning(t *testing.T) {
 	if p, _ := e.st.ListPendingInputs(context.Background(), s.ID); len(p) != 0 {
 		t.Errorf("pending inputs = %d", len(p))
 	}
+}
+
+// A message sent while the session runs gets no wakeup (the API enqueues
+// one only for parked sessions). If the run then fails, the worker must
+// not leave it pending until the user writes again: it gets a pass of
+// its own, as a follow-up to the failed session.
+func TestInputDuringAFailedRunIsNotStranded(t *testing.T) {
+	e := newEnv(t)
+	s := e.newSession()
+	e.llm.PushFunc(func(req llm.Request) (*llm.Response, error) {
+		if _, err := e.st.AddInput(s.ID, store.InputMessage, "also update the docs", "", testUser); err != nil {
+			t.Error(err)
+		}
+		return nil, &llm.Error{Provider: "fake", Kind: llm.ErrInvalidRequest, Message: "bad request"}
+	})
+	var followUp string
+	e.llm.PushFunc(func(req llm.Request) (*llm.Response, error) {
+		followUp = req.Messages[len(req.Messages)-1].Text()
+		return llmtest.Text("Docs updated."), nil
+	})
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := e.st.ListPendingInputs(context.Background(), s.ID); len(p) != 0 {
+		t.Errorf("input left pending after the task: %d", len(p))
+	}
+	if !strings.Contains(followUp, "also update the docs") {
+		t.Errorf("the model never got the message; last request text %q", followUp)
+	}
+	wantSeq(t, "statuses", e.statuses(s.ID), []string{"provisioning", "setting_up", "running", "failed", "running", "no_changes"})
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -155,15 +156,11 @@ func (s *session) run(ctx context.Context) error {
 	stopWatch := s.watchStop(ctx)
 	defer stopWatch()
 
+	// seen holds the input IDs that were pending when a pass started.
+	seen := map[string]bool{}
 	for range 1000 { // a bound against a bug spinning forever
 		if err := ctx.Err(); err != nil {
 			return errInterrupted
-		}
-		if s.halted {
-			// The session failed (or hit its time limit) in this task.
-			// Input that arrived meanwhile waits for the next wakeup
-			// rather than retrying the failure in a loop.
-			return nil
 		}
 		sess, err := st.GetSession(ctx, s.id)
 		if err != nil {
@@ -185,6 +182,22 @@ func (s *session) run(ctx context.Context) error {
 		pending, err := st.ListPendingInputs(ctx, s.id)
 		if err != nil {
 			return err
+		}
+		if s.halted {
+			// The session failed in this task. Input that was pending
+			// when the failed pass started waits for the next wakeup
+			// rather than retrying the failure in a loop. Input that
+			// arrived during it has no other wakeup (the API enqueues
+			// none while the session runs), so it gets one more pass,
+			// as a follow-up to the failed session. After the time limit
+			// it waits too: this task has no time left.
+			if s.timeLimit.Load() || !slices.ContainsFunc(pending, func(in store.Input) bool { return !seen[in.ID] }) {
+				return nil
+			}
+			s.halted = false
+		}
+		for _, in := range pending {
+			seen[in.ID] = true
 		}
 		status := s.sess.Status
 		live := status == events.StatusQueued || status == events.StatusProvisioning ||
