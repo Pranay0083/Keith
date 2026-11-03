@@ -349,6 +349,19 @@ func (w *Worker) handle(ctx context.Context, sessionID string) error {
 	if errors.Is(err, errInterrupted) {
 		return fmt.Errorf("worker: session %s: %w: %w", sessionID, err, queue.ErrBusy)
 	}
-	s.log.Error("session task failed", "err", err)
-	return fmt.Errorf("worker: session %s: %w", sessionID, err)
+	// The error can carry command output (stderr tails) and reaches the
+	// log and asynq's task record: redact it.
+	rerr := &redactedError{msg: fmt.Sprintf("worker: session %s: %s", sessionID, s.em.redact(err.Error())), err: err}
+	s.log.Error("session task failed", "err", rerr)
+	return rerr
 }
+
+// redactedError is a task error whose message was redacted; it still
+// unwraps to the original for errors.Is.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }

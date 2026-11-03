@@ -2,13 +2,18 @@ package worker
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Pranay0083/keith/internal/events"
 	"github.com/Pranay0083/keith/internal/llm"
 	"github.com/Pranay0083/keith/internal/llm/llmtest"
+	"github.com/Pranay0083/keith/internal/sandbox/memsandbox"
 	"github.com/Pranay0083/keith/internal/secrets"
 )
 
@@ -132,4 +137,71 @@ func TestPRTitleBodyAndCommitAreRedacted(t *testing.T) {
 			}
 		}
 	})
+}
+
+// failingStore fails one call with an error carrying a secret, as a
+// driver or command error quoting output might.
+type failingStore struct {
+	Store
+	err error
+}
+
+func (f failingStore) IsCancelRequested(context.Context, string) (bool, error) { return false, f.err }
+
+// Task errors are logged and handed to asynq (which stores their text):
+// they must be redacted, and still unwrap.
+func TestTaskErrorsAreRedacted(t *testing.T) {
+	e := newEnv(t)
+	e.addSecret("API_KEY", testSecret, "")
+	cause := errors.New("pq: value " + testSecret + " is wrong")
+	e.store = failingStore{Store: e.st, err: cause}
+	var logs strings.Builder
+	w := e.worker()
+	w.log = slog.New(slog.NewTextHandler(&lockedWriter{w: &logs}, nil))
+	s := e.newSession()
+	err := e.run(s.ID)
+	if err == nil {
+		t.Fatal("expected a task error")
+	}
+	if strings.Contains(err.Error(), testSecret) || !strings.Contains(err.Error(), secrets.Redacted) {
+		t.Errorf("task error = %q", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Error("the redacted error does not unwrap to its cause")
+	}
+	if strings.Contains(logs.String(), testSecret) {
+		t.Errorf("logs carry the secret:\n%s", logs.String())
+	}
+}
+
+// A failing command's output is redacted before it is cut to its tail,
+// so the cut cannot leave the end of a secret in clear.
+func TestCommandErrorsRedactBeforeCutting(t *testing.T) {
+	e := newEnv(t)
+	e.addSecret("API_KEY", testSecret, "")
+	s := e.newSession()
+	// The 2000-byte tail starts in the middle of the secret.
+	stderr := "fatal: token " + testSecret + strings.Repeat("x", 2000-len(testSecret)/2)
+	e.sbRules = append(e.sbRules, memsandbox.On(memsandbox.Contains("git clone"), memsandbox.Exit(128, "", stderr)))
+	if err := e.run(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	half := testSecret[len(testSecret)/2:]
+	for _, ev := range e.events(s.ID, events.TypeError) {
+		if strings.Contains(string(ev.Payload), half) {
+			t.Errorf("error event carries the end of the secret: %s", ev.Payload)
+		}
+	}
+}
+
+// lockedWriter serializes writes from the worker's goroutines.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }

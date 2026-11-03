@@ -155,6 +155,7 @@ A task error is retried (three times; `ErrBusy` is not counted), but some sessio
 
 - **End of turn.** An error from verify or ship (a git command failing, say) fails the session with `ship_failed` rather than failing the task: a retry would meet the same git state.
 - **Exhausted tasks.** asynq archives a task whose retries are used up, even when its last error is `ErrBusy`. The session server's `ErrorHandler` (`queue.SessionErrorHandler`) calls `Worker.TaskExhausted` first. After `ErrBusy` (another worker held the lease, or this one was shut down or lost it) it enqueues a fresh `resume_session` (reason `wakeup`). After any other error it fails the session with `internal_error`, under its lease, if the session still needs a run.
+- **Task errors** are redacted before they are logged or returned (asynq stores their text), and a failing command's output is redacted before it is cut to its tail, so the cut cannot expose the end of a secret.
 - **The sweeper.** Each reaper pass also wakes (`resume_session`, reason `wakeup`) every active session (`queued`, `provisioning`, `setting_up`, `running`) that no worker holds and that has not been updated for 10 minutes: its task is gone, and a Stop on it would otherwise never be honoured. A duplicate wakeup is harmless.
 
 ### Resume

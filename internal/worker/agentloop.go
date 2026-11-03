@@ -336,7 +336,7 @@ GIT_INDEX_FILE="$tmp" git diff --cached --no-color --no-ext-diff "$base" | head 
 		return nil
 	}
 	if res.ExitCode != 0 {
-		s.log.Warn("compute diff", "repo", r.FullName, "exit", res.ExitCode, "stderr", s.em.redact(tail(res.Stderr, 500)))
+		s.log.Warn("compute diff", "repo", r.FullName, "exit", res.ExitCode, "stderr", tail(s.em.redact(res.Stderr), 500))
 		return nil
 	}
 	diff := res.Stdout

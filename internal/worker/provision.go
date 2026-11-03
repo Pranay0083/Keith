@@ -329,14 +329,17 @@ func (s *session) exec(ctx context.Context, dir, cmd string, timeout time.Durati
 }
 
 // execOK runs cmd and turns a non-zero exit into an error carrying the
-// output tail.
+// output tail, redacted (it reaches task errors, logs and error events).
+// The output is redacted before it is cut, so the cut cannot leave part
+// of a secret that the redactor no longer recognizes.
 func (s *session) execOK(ctx context.Context, dir, cmd string, timeout time.Duration) (string, error) {
 	res, err := s.exec(ctx, dir, cmd, timeout)
 	if err != nil {
 		return "", err
 	}
 	if res.ExitCode != 0 {
-		return res.Stdout, fmt.Errorf("exit %d: %s", res.ExitCode, tail(strings.TrimSpace(res.Stderr+"\n"+res.Stdout), 2000))
+		out := s.em.redact(strings.TrimSpace(res.Stderr + "\n" + res.Stdout))
+		return res.Stdout, fmt.Errorf("exit %d: %s", res.ExitCode, tail(out, 2000))
 	}
 	return res.Stdout, nil
 }
@@ -378,7 +381,7 @@ printf %%s %s | /usr/bin/base64 -d > %s
 		return err
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("install as root: exit %d: %s", res.ExitCode, tail(res.Stderr, 1000))
+		return fmt.Errorf("install as root: exit %d: %s", res.ExitCode, tail(s.em.redact(res.Stderr), 1000))
 	}
 	key := "credential." + s.w.remote.CredentialKey() + ".helper"
 	cfg := fmt.Sprintf(`git config --global --unset-all %[1]s >/dev/null 2>&1 || true
