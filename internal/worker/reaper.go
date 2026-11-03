@@ -23,7 +23,8 @@ type sandboxLister interface {
 	List(ctx context.Context, labels map[string]string) ([]string, error)
 }
 
-// RunReaper reaps every ReapInterval until ctx ends.
+// RunReaper reaps (Reap) and sweeps (Sweep) every ReapInterval until ctx
+// ends.
 func (w *Worker) RunReaper(ctx context.Context) {
 	t := time.NewTicker(w.o.ReapInterval)
 	defer t.Stop()
@@ -34,6 +35,9 @@ func (w *Worker) RunReaper(ctx context.Context) {
 		}
 		if n > 0 {
 			w.log.Info("reaped sandboxes", "count", n)
+		}
+		if _, err := w.Sweep(ctx); err != nil && ctx.Err() == nil {
+			w.log.Warn("sweep live sessions", "err", err)
 		}
 		select {
 		case <-ctx.Done():

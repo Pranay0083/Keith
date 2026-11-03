@@ -48,8 +48,13 @@ func TestHandlerDecodesAndValidates(t *testing.T) {
 	if len(got) != 1 || got[0].SessionID != "s1" || got[0].Reason != queue.ResumeMessage || got[0].InputID != "m_1" {
 		t.Fatalf("payload %+v", got)
 	}
+	wake := asynq.NewTask(queue.TypeResumeSession, []byte(`{"session_id":"s2","reason":"wakeup"}`))
+	if err := mux.ProcessTask(ctx, wake); err != nil || len(got) != 2 || got[1].Reason != queue.ResumeWakeup {
+		t.Fatalf("wakeup: err %v, payloads %+v", err, got)
+	}
 	for _, body := range []string{`not json`, `{"session_id":"s1","reason":"nope"}`, `{"session_id":"","reason":"cancel"}`,
-		`{"session_id":"s","reason":"cancel","input_id":"m_1"}`, `{"session_id":"s","reason":"answer"}`} {
+		`{"session_id":"s","reason":"cancel","input_id":"m_1"}`, `{"session_id":"s","reason":"answer"}`,
+		`{"session_id":"s","reason":"wakeup","input_id":"m_1"}`} {
 		err := mux.ProcessTask(ctx, asynq.NewTask(queue.TypeResumeSession, []byte(body)))
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Errorf("%s: err = %v, want SkipRetry", body, err)
@@ -233,5 +238,79 @@ func TestServerRunsTasksIT(t *testing.T) {
 	}
 	if info.Retried != 0 {
 		t.Fatalf("busy retry counted as failure: retried = %d", info.Retried)
+	}
+}
+
+func TestFinalAttempt(t *testing.T) {
+	if queue.FinalAttempt(2, 3) || !queue.FinalAttempt(3, 3) || !queue.FinalAttempt(0, 0) {
+		t.Fatal("FinalAttempt")
+	}
+}
+
+// SessionErrorHandler reports a session task's last attempt, ErrBusy
+// included (asynq archives an exhausted task whatever the error), and
+// ignores other tasks and payload errors.
+func TestSessionErrorHandlerSeesTheLastAttemptIT(t *testing.T) {
+	rdb := itRedis(t)
+	ctx := context.Background()
+	type final struct {
+		id   string
+		busy bool
+	}
+	got := make(chan final, 8)
+	srv := queue.NewServer(rdb, queue.ServerConfig{
+		Concurrency: 2,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ErrorHandler: queue.SessionErrorHandler(func(_ context.Context, id string, err error) {
+			got <- final{id, errors.Is(err, queue.ErrBusy)}
+		}),
+	})
+	mux := queue.NewMux(queue.Handlers{
+		RunSession: func(_ context.Context, p queue.RunSessionPayload) error {
+			if p.SessionID == "s-busy" {
+				return fmt.Errorf("held: %w", queue.ErrBusy)
+			}
+			return errors.New("boom")
+		},
+		ResumeSession: func(context.Context, queue.ResumeSessionPayload) error { return errors.New("boom") },
+	})
+	if err := srv.Start(mux); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown()
+	ac := asynq.NewClientFromRedisClient(rdb)
+	defer ac.Close()
+	enqueue := func(typ string, payload any, retry int) {
+		t.Helper()
+		b, _ := json.Marshal(payload)
+		if _, err := ac.EnqueueContext(ctx, asynq.NewTask(typ, b), asynq.Queue(queue.QueueSessions), asynq.MaxRetry(retry)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enqueue(queue.TypeRunSession, queue.RunSessionPayload{SessionID: "s-boom"}, 0)
+	enqueue(queue.TypeRunSession, queue.RunSessionPayload{SessionID: "s-busy"}, 0)
+	// A payload error never ran the session: not reported.
+	enqueue(queue.TypeResumeSession, queue.ResumeSessionPayload{SessionID: "s-bad", Reason: "nope"}, 0)
+
+	seen := map[string]bool{}
+	deadline := time.After(30 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case f := <-got:
+			seen[f.id] = f.busy
+		case <-deadline:
+			t.Fatalf("final attempts seen: %v", seen)
+		}
+	}
+	if busy, ok := seen["s-boom"]; !ok || busy {
+		t.Errorf("s-boom: %v %v", ok, busy)
+	}
+	if busy, ok := seen["s-busy"]; !ok || !busy {
+		t.Errorf("s-busy: %v %v", ok, busy)
+	}
+	select {
+	case f := <-got:
+		t.Errorf("unexpected final attempt: %+v", f)
+	case <-time.After(time.Second):
 	}
 }

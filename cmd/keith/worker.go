@@ -115,6 +115,7 @@ func runWorker(ctx context.Context, logger *slog.Logger, load func() (*config.Co
 		Bus:       redisbus.New(rdb),
 		Leases:    worker.NewRedisLeaser(lease.NewManager(rdb)),
 		Control:   ctl,
+		Queue:     qc,
 		Sandboxes: sandboxes,
 		GitHub:    worker.NewAppGitHub(app),
 		LLM:       func(name string) (llm.Provider, error) { return llmproviders.New(name, cfg) },
@@ -128,10 +129,14 @@ func runWorker(ctx context.Context, logger *slog.Logger, load func() (*config.Co
 	// Session tasks run for minutes to hours and webhook tasks for
 	// milliseconds, so each queue gets its own server: long sessions can
 	// never starve uninstall handling.
+	// A session task asynq is about to archive (retries used up) would
+	// leave its session live with nothing to run it: the worker fails it,
+	// or enqueues a fresh wakeup after ErrBusy.
 	sessions := queue.NewServer(rdb, queue.ServerConfig{
-		Concurrency: cfg.WorkerConcurrency,
-		Queues:      map[string]int{queue.QueueSessions: 1},
-		Logger:      logger,
+		Concurrency:  cfg.WorkerConcurrency,
+		Queues:       map[string]int{queue.QueueSessions: 1},
+		Logger:       logger,
+		ErrorHandler: queue.SessionErrorHandler(w.TaskExhausted),
 	})
 	webhooks := queue.NewServer(rdb, queue.ServerConfig{
 		Concurrency: webhookConcurrency,

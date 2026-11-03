@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 )
 
 // Worker queries added after wave D (the reaper, the sweeper and the
@@ -23,4 +24,19 @@ func (s *Store) ClearSessionSandbox(ctx context.Context, id, sandboxID string) (
 		return false, wrap(op, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// ListStaleLiveSessions returns sessions in an active status (queued,
+// provisioning, setting_up or running) last updated before before, oldest
+// first, at most limit of them (limit <= 0 means 100). The worker's
+// sweeper wakes those no worker holds: their task was archived or lost.
+func (s *Store) ListStaleLiveSessions(ctx context.Context, before time.Time, limit int) ([]Session, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	return s.listSessions(ctx, "list stale live sessions", `
+		SELECT `+sessionCols+` FROM sessions s
+		WHERE s.status = ANY($1::text[]) AND s.updated_at < $2
+		ORDER BY s.updated_at, s.id
+		LIMIT $3`, statusStrings(ActiveStatuses), before, limit)
 }

@@ -1,8 +1,11 @@
 package store_test
 
 import (
+	"slices"
 	"testing"
+	"time"
 
+	"github.com/Pranay0083/keith/internal/events"
 	"github.com/Pranay0083/keith/internal/store/storetest"
 )
 
@@ -29,5 +32,42 @@ func TestClearSessionSandboxIsCompareAndSet(t *testing.T) {
 	}
 	if ok := must(s.ClearSessionSandbox(ctx, id, "keith-sb-new")); ok {
 		t.Fatal("cleared twice")
+	}
+}
+
+func TestListStaleLiveSessions(t *testing.T) {
+	s := storetest.New(t)
+	ctx := ctxT(t)
+	f := storetest.Seed(t, s)
+	id := f.Session.ID
+
+	stale := func(before time.Time) []string {
+		t.Helper()
+		var out []string
+		for _, x := range must(s.ListStaleLiveSessions(ctx, before, 0)) {
+			out = append(out, x.ID)
+		}
+		return out
+	}
+	future := time.Now().Add(time.Hour)
+	if got := stale(future); !slices.Contains(got, id) {
+		t.Fatalf("queued session not listed: %v", got)
+	}
+	if got := stale(time.Now().Add(-time.Hour)); slices.Contains(got, id) {
+		t.Fatalf("recently updated session listed: %v", got)
+	}
+	for _, st := range []events.SessionStatus{events.StatusWaitingForUser, events.StatusCompleted} {
+		if err := s.SetSessionStatus(ctx, id, st, ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := stale(future); slices.Contains(got, id) {
+			t.Fatalf("%s session listed", st)
+		}
+	}
+	if err := s.SetSessionStatus(ctx, id, events.StatusRunning, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := stale(future); !slices.Contains(got, id) {
+		t.Fatalf("running session not listed: %v", got)
 	}
 }

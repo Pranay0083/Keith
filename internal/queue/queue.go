@@ -9,6 +9,8 @@
 //     nobody is running: a follow-up message, an answer, or a Stop while
 //     the session is queued or waiting_for_user. Deduplicated per
 //     (session, reason, input) while one is pending, running or retrying.
+//     The worker enqueues one too (reason wakeup) for a session whose
+//     task was archived or lost; see SessionErrorHandler.
 //   - github_webhook (GitHubWebhookPayload): a verified GitHub App webhook
 //     for internal/hooks.ProcessGitHub. One per delivery ID.
 //
@@ -41,6 +43,12 @@
 // ListPendingInputs and IsCancelRequested and carry on if either has
 // something: input that arrived while it was finishing has no other
 // wakeup.
+//
+// asynq archives a task whose retries are used up, even when its last
+// error wraps ErrBusy. The worker's session server sets
+// ServerConfig.ErrorHandler to SessionErrorHandler, so the worker can
+// fail the session, or enqueue a fresh wakeup (reason wakeup), before
+// nothing would run it again.
 //
 // Payload errors wrap asynq.SkipRetry, so a malformed task is archived,
 // not retried.
@@ -112,11 +120,14 @@ const (
 	// ResumeCancel: Stop while no worker held the session (queued or
 	// waiting_for_user), or the App was uninstalled.
 	ResumeCancel ResumeReason = "cancel"
+	// ResumeWakeup: the worker's own wakeup for a session no task would
+	// run again (its task was archived, or lost). Takes no input_id.
+	ResumeWakeup ResumeReason = "wakeup"
 )
 
 // Valid reports whether r is a defined reason.
 func (r ResumeReason) Valid() bool {
-	return r == ResumeMessage || r == ResumeAnswer || r == ResumeCancel
+	return r == ResumeMessage || r == ResumeAnswer || r == ResumeCancel || r == ResumeWakeup
 }
 
 // ResumeSessionPayload wakes a worker for a session.
@@ -152,9 +163,9 @@ func (p ResumeSessionPayload) validate() error {
 		return errors.New("resume_session: empty session_id")
 	case !p.Reason.Valid():
 		return fmt.Errorf("resume_session: invalid reason %q", p.Reason)
-	case p.Reason == ResumeCancel && p.InputID != "":
-		return errors.New("resume_session: cancel takes no input_id")
-	case p.Reason != ResumeCancel && p.InputID == "":
+	case (p.Reason == ResumeCancel || p.Reason == ResumeWakeup) && p.InputID != "":
+		return fmt.Errorf("resume_session: %s takes no input_id", p.Reason)
+	case p.Reason != ResumeCancel && p.Reason != ResumeWakeup && p.InputID == "":
 		return fmt.Errorf("resume_session: %s needs an input_id", p.Reason)
 	}
 	return nil

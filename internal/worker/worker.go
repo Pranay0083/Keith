@@ -32,7 +32,9 @@
 //     revoke both tokens, pause the sandbox, release the lease.
 //
 // The reaper (RunReaper) deletes sandboxes parked longer than the idle
-// timeout, and orphaned ones.
+// timeout, and orphaned ones, and sweeps: it wakes active sessions no
+// worker holds (Sweep). TaskExhausted handles a task asynq is about to
+// archive (queue.SessionErrorHandler).
 package worker
 
 import (
@@ -67,6 +69,9 @@ type Deps struct {
 	// Control delivers Stop signals; nil means the cancel flag is only
 	// polled.
 	Control control.Subscriber
+	// Queue enqueues the worker's own wakeups (TaskExhausted, Sweep); nil
+	// turns them off (local mode).
+	Queue Enqueuer
 	// Sandboxes creates and finds sandboxes.
 	Sandboxes sandbox.Provider
 	GitHub    GitHub
@@ -131,6 +136,9 @@ type Options struct {
 	// cover the moment between Create and SetSessionSandbox (default
 	// 10m).
 	OrphanGrace time.Duration
+	// SweepAfter is how long an active session may go without an update
+	// and without a lease before Sweep wakes it (default 10m).
+	SweepAfter time.Duration
 
 	// NoPR is for local dry runs: the agent gets no open_pr tool and the
 	// worker opens no pull request.
@@ -175,6 +183,7 @@ const (
 	DefaultIdleTimeout        = 30 * time.Minute
 	DefaultReapInterval       = time.Minute
 	DefaultOrphanGrace        = 10 * time.Minute
+	DefaultSweepAfter         = 10 * time.Minute
 )
 
 func (o Options) withDefaults() Options {
@@ -210,6 +219,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.OrphanGrace <= 0 {
 		o.OrphanGrace = DefaultOrphanGrace
+	}
+	if o.SweepAfter <= 0 {
+		o.SweepAfter = DefaultSweepAfter
 	}
 	o.SandboxLabels = maps.Clone(o.SandboxLabels)
 	return o

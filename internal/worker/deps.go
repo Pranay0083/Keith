@@ -47,6 +47,9 @@ type Store interface {
 	// ClearSessionSandbox clears the session's sandbox only if it is
 	// still sandboxID (the reaper's compare-and-set).
 	ClearSessionSandbox(ctx context.Context, id, sandboxID string) (bool, error)
+	// ListStaleLiveSessions lists active sessions not updated since
+	// before (the sweeper).
+	ListStaleLiveSessions(ctx context.Context, before time.Time, limit int) ([]store.Session, error)
 }
 
 var _ Store = (*store.Store)(nil)

@@ -148,6 +148,14 @@ Workers scale horizontally: the per-session lease, not the queue, guarantees one
 
    A worker that has lost the lease never touches the sandbox again.
 
+### Recovery
+
+A task error is retried (three times; `ErrBusy` is not counted), but some session states must not depend on that:
+
+- **End of turn.** An error from verify or ship (a git command failing, say) fails the session with `ship_failed` rather than failing the task: a retry would meet the same git state.
+- **Exhausted tasks.** asynq archives a task whose retries are used up, even when its last error is `ErrBusy`. The session server's `ErrorHandler` (`queue.SessionErrorHandler`) calls `Worker.TaskExhausted` first. After `ErrBusy` (another worker held the lease, or this one was shut down or lost it) it enqueues a fresh `resume_session` (reason `wakeup`). After any other error it fails the session with `internal_error`, under its lease, if the session still needs a run.
+- **The sweeper.** Each reaper pass also wakes (`resume_session`, reason `wakeup`) every active session (`queued`, `provisioning`, `setting_up`, `running`) that no worker holds and that has not been updated for 10 minutes: its task is gone, and a Stop on it would otherwise never be honoured. A duplicate wakeup is harmless.
+
 ### Resume
 
 A follow-up message, an answer or a Stop on a parked session enqueues `resume_session`.
