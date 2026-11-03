@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { ChatMessage, ChatQuestion } from "@/lib/session/reducer";
 import { isTerminal, type SessionStatusName } from "@/lib/api/events";
 import { Button, Kbd, Textarea } from "../ui";
@@ -13,8 +13,10 @@ export interface ComposerProps {
   question: ChatQuestion | null;
   /** The answer already sent for the open question, while it is pending. */
   pendingAnswer: ChatMessage | null;
-  /** True when the stream is gone for good (signed out, no access). */
+  /** True when the stream is gone for good (signed out, no access), or the session can't resume. */
   disabled: boolean;
+  /** Why the composer is locked, shown in place of the hint or error. */
+  notice?: ReactNode;
   onSend(text: string): Promise<void>;
   onAnswer(questionId: string, text: string): Promise<void>;
 }
@@ -35,7 +37,7 @@ function submitOnEnter(e: KeyboardEvent<HTMLTextAreaElement>) {
   }
 }
 
-function MessageForm({ status, disabled, onSend }: ComposerProps) {
+function MessageForm({ status, disabled, notice, onSend }: ComposerProps) {
   const id = useId();
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -77,8 +79,8 @@ function MessageForm({ status, disabled, onSend }: ComposerProps) {
           onKeyDown={submitOnEnter}
           placeholder={placeholder}
           disabled={disabled}
-          aria-describedby={error ? `${id}-error` : `${id}-hint`}
-          aria-invalid={error ? true : undefined}
+          aria-describedby={notice ? `${id}-notice` : error ? `${id}-error` : `${id}-hint`}
+          aria-invalid={error && !notice ? true : undefined}
           className="max-h-40 min-h-[2.75rem] resize-y"
           maxLength={16_000}
         />
@@ -86,7 +88,11 @@ function MessageForm({ status, disabled, onSend }: ComposerProps) {
           {sending ? null : <SendIcon />}
         </Button>
       </div>
-      {error ? (
+      {notice ? (
+        <div id={`${id}-notice`} className="mt-2">
+          {notice}
+        </div>
+      ) : error ? (
         <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-bad">
           {error}
         </p>
@@ -99,7 +105,7 @@ function MessageForm({ status, disabled, onSend }: ComposerProps) {
   );
 }
 
-function AnswerForm({ question, pendingAnswer, disabled, onAnswer }: ComposerProps & { question: ChatQuestion }) {
+function AnswerForm({ question, pendingAnswer, disabled, notice, onAnswer }: ComposerProps & { question: ChatQuestion }) {
   const id = useId();
   const [text, setText] = useState("");
   const [sending, setSending] = useState<string | null>(null);
@@ -182,7 +188,9 @@ function AnswerForm({ question, pendingAnswer, disabled, onAnswer }: ComposerPro
           </form>
         </>
       )}
-      {error ? (
+      {notice ? (
+        <div className="mt-2">{notice}</div>
+      ) : error ? (
         <p role="alert" className="mt-1 text-xs text-bad">
           {error}
         </p>

@@ -39,6 +39,9 @@ export function SessionView({ id }: { id: string }) {
   const [reload, setReload] = useState(0);
   const [stopRequested, setStopRequested] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Set by a 409 repo_access_lost: the org can no longer use one of the
+  // session's repos, so no follow-up or answer can resume it.
+  const [repoAccessLost, setRepoAccessLost] = useState(false);
 
   const wide = useMediaQuery("(min-width: 1280px)");
   const lg = useMediaQuery("(min-width: 1024px)");
@@ -82,16 +85,28 @@ export function SessionView({ id }: { id: string }) {
     setReload((n) => n + 1);
   }, [dispatch, retry]);
 
-  async function sendMessage(text: string) {
+  /**
+   * Sends a follow-up or an answer. Nothing is shown in the chat until the
+   * API accepts it; a failure rethrows for the composer to show.
+   */
+  async function submit(call: () => Promise<{ message_id: string }>): Promise<string> {
     setActionError(null);
-    const { message_id } = await api.sendMessage(id, text);
-    dispatch({ type: "message_sent", messageId: message_id, text, ts: new Date().toISOString() });
+    try {
+      return (await call()).message_id;
+    } catch (e) {
+      if (isApiError(e) && e.code === "repo_access_lost") setRepoAccessLost(true);
+      throw e;
+    }
+  }
+
+  async function sendMessage(text: string) {
+    const messageId = await submit(() => api.sendMessage(id, text));
+    dispatch({ type: "message_sent", messageId, text, ts: new Date().toISOString() });
   }
 
   async function answer(questionId: string, text: string) {
-    setActionError(null);
-    const { message_id } = await api.answer(id, questionId, text);
-    dispatch({ type: "message_sent", messageId: message_id, text, ts: new Date().toISOString(), questionId });
+    const messageId = await submit(() => api.answer(id, questionId, text));
+    dispatch({ type: "message_sent", messageId, text, ts: new Date().toISOString(), questionId });
   }
 
   async function stop() {
@@ -244,7 +259,8 @@ export function SessionView({ id }: { id: string }) {
             status={state.status}
             question={question}
             pendingAnswer={pendingAnswer(state)}
-            disabled={streamGone || state.status === null}
+            disabled={streamGone || state.status === null || repoAccessLost}
+            notice={repoAccessLost ? <RepoAccessLost /> : null}
             onSend={sendMessage}
             onAnswer={answer}
           />
@@ -308,6 +324,23 @@ function SessionMeta({ session, state }: { session: Session; state: SessionState
         </a>
       ))}
     </div>
+  );
+}
+
+/** Shown in the composer after a 409 repo_access_lost. */
+function RepoAccessLost() {
+  return (
+    <Banner
+      tone="bad"
+      title="This session can't continue"
+      actions={
+        <LinkButton href="/new" size="sm">
+          Start a new session
+        </LinkButton>
+      }
+    >
+      One of its repos is no longer available to this organization.
+    </Banner>
   );
 }
 

@@ -34,7 +34,9 @@ const h = vi.hoisted(() => {
     user: { id: "u_me", login: "octocat", name: "Mona", avatar_url: "" },
     orgs: [{ id: "o1", name: "acme", role: "owner" }],
   };
-  return { sockets, detail, me, stopCalls: 0 };
+  type Send = (...args: unknown[]) => Promise<{ message_id: string }>;
+  const accept: Send = async () => ({ message_id: "m_1" });
+  return { sockets, detail, me, stopCalls: 0, accept, sendMessage: accept, answer: accept, calls: [] as unknown[][] };
 });
 
 vi.mock("@/lib/api/client", () => {
@@ -55,8 +57,14 @@ vi.mock("@/lib/api/client", () => {
     stop: async () => {
       h.stopCalls++;
     },
-    sendMessage: async () => ({ message_id: "m_1" }),
-    answer: async () => ({ message_id: "m_2" }),
+    sendMessage: (...args: unknown[]) => {
+      h.calls.push(["sendMessage", ...args]);
+      return h.sendMessage(...args);
+    },
+    answer: (...args: unknown[]) => {
+      h.calls.push(["answer", ...args]);
+      return h.answer(...args);
+    },
     diff: async () => ({ repos: [] }),
     openEvents: (_id: string, afterSeq: number) => {
       const s = { onopen: null, onmessage: null, onclose: null, close() {}, afterSeq };
@@ -86,6 +94,7 @@ vi.mock("@/components/session/terminal", () => ({ TerminalView: () => null }));
 vi.mock("@/components/session/diff-view", () => ({ DiffView: () => null }));
 
 const { AppShell } = await import("@/components/app-shell");
+const { ApiError } = await import("@/lib/api/client");
 const { SessionView } = await import("@/components/session/session-view");
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -108,6 +117,9 @@ beforeEach(async () => {
   })) as unknown as typeof window.matchMedia;
   h.sockets.length = 0;
   h.stopCalls = 0;
+  h.sendMessage = h.accept;
+  h.answer = h.accept;
+  h.calls.length = 0;
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -200,5 +212,70 @@ describe("Chat", () => {
       frame(6, "message.user", { message_id: "m_10", user_id: "u_me", text: "Thanks" }),
     );
     expect(authors()).toEqual(["You", "Keith", "Keith", "A teammate", "You"]);
+  });
+});
+
+describe("Composer errors", () => {
+  const textarea = () => document.querySelector<HTMLTextAreaElement>("form textarea")!;
+  const sendButton = () => document.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+  const chatText = () => document.querySelector('[role="log"]')?.textContent ?? "";
+  const alerts = () => [...document.querySelectorAll('[role="alert"]')].map((el) => el.textContent ?? "");
+  const newLinks = () => [...document.querySelectorAll<HTMLAnchorElement>('a[href="/new"]')];
+
+  /** Types into a React-controlled textarea. */
+  async function type(el: HTMLTextAreaElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  const reject = (status: number, code: string, message: string) => async () => {
+    throw new ApiError(status, code, message);
+  };
+
+  const lost = reject(
+    409,
+    "repo_access_lost",
+    "acme/web is no longer available to this organization, so this session cannot continue. Start a new session.",
+  );
+
+  async function ask() {
+    await send(
+      frame(3, "question.asked", { question_id: "toolu_q", question: "Which key?", choices: ["Sandbox", "Live"] }),
+      frame(4, "session.status", { status: "waiting_for_user" }),
+    );
+  }
+
+  it("locks the composer and links to /new when a follow-up gets repo_access_lost", async () => {
+    await send(frame(3, "session.status", { status: "completed" }));
+    h.sendMessage = lost;
+    await type(textarea(), "Also add a test");
+    await click(sendButton());
+
+    expect(h.calls).toEqual([["sendMessage", SID, "Also add a test"]]);
+    expect(alerts().join(" ")).toContain("This session can't continue");
+    expect(alerts().join(" ")).toContain("One of its repos is no longer available to this organization.");
+    expect(newLinks().map((a) => a.textContent)).toContain("Start a new session");
+    // Nothing pending or optimistic: the text stays put and is not in the chat.
+    expect(chatText()).not.toContain("Also add a test");
+    expect(textarea().value).toBe("Also add a test");
+    expect(textarea().disabled).toBe(true);
+    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("locks the answer form when an answer gets repo_access_lost", async () => {
+    await ask();
+    h.answer = lost;
+    await click(buttons("Sandbox")[0]!);
+
+    expect(h.calls).toEqual([["answer", SID, "toolu_q", "Sandbox"]]);
+    expect(alerts().join(" ")).toContain("This session can't continue");
+    expect(newLinks()).not.toHaveLength(0);
+    expect(document.body.textContent).not.toContain("Answer sent");
+    expect(buttons("Sandbox")[0]!.disabled).toBe(true);
+    expect(buttons("Sandbox")[0]!.getAttribute("aria-busy")).toBeNull();
+    expect(chatText()).toContain("Which key?"); // the question stays open
   });
 });
