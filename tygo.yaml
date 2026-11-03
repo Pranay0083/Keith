@@ -1,0 +1,16 @@
+# tygo turns the Go event payload structs in internal/events into
+# TypeScript for the web app. Run `make gen` after changing them and commit
+# the output; web/src/lib/api/events.ts adds the typed layer on top and
+# fails type-checking if the two drift.
+packages:
+  - path: "github.com/Pranay0083/keith/internal/events"
+    output_path: "web/src/lib/api/events.gen.ts"
+    exclude_files:
+      - "events_test.go"
+    type_mappings:
+      time.Time: "string /* RFC 3339 */"
+      json.RawMessage: "unknown"
+    enum_style: "union"
+    preserve_comments: "types"
+    frontmatter: |
+      // Source: internal/events. Regenerate with `make gen` from the repo root.
